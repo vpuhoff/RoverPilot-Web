@@ -3,104 +3,181 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Управление PTZ камерой</title>
+    <title>Управление PTZ камерой и платформой</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/static/js/main.js"></script>
+
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .ptz-button {
+        .ptz-button, .platform-button {
             transition: all 0.1s ease-in-out;
             user-select: none; /* Предотвратить выделение текста на кнопках */
         }
-        .ptz-button:active {
+        .ptz-button:active, .platform-button:active {
             transform: scale(0.95);
             box-shadow: inset 2px 2px 5px rgba(0,0,0,0.2);
         }
-        /* Стили для индикатора загрузки */
         .loader {
-            border: 4px solid #f3f3f3; /* Light grey */
-            border-top: 4px solid #3498db; /* Blue */
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
             border-radius: 50%;
             width: 30px;
             height: 30px;
             animation: spin 1s linear infinite;
-            /* display: none; будет управляться JS */
             margin: 10px auto;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+        .control-section {
+            background-color: #f9fafb; /* Slightly different background for sections */
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            margin-bottom: 1.5rem;
+        }
+        .bar-container {
+            width: 100%;
+            height: 20px;
+            background-color: #e5e7eb;
+            border-radius: 0.375rem;
+            overflow: hidden;
+            position: relative;
+            margin-bottom: 0.5rem;
+        }
+        .bar {
+            height: 100%;
+            background-color: #3b82f6;
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            transition: width 0.1s linear, left 0.1s linear, background-color 0.1s linear;
+        }
+        .bar-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            font-size: 0.75rem;
+            line-height: 20px; /* Same as bar height */
+            color: #1f2937;
+            font-weight: bold;
+        }
+        .notification-area {
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+            border-radius: 0.375rem;
+            text-align: center;
+            font-size: 0.875rem;
+            display: none; /* Hidden by default */
+        }
+        .notification-area.success { background-color: #d1fae5; color: #065f46; }
+        .notification-area.error { background-color: #fee2e2; color: #991b1b; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800 flex flex-col items-center min-h-screen p-4">
 
-    <div class="bg-white p-6 rounded-lg shadow-xl w-full max-w-2xl">
-        <h1 class="text-2xl font-bold text-center mb-6 text-blue-600">Управление PTZ камерой (ONVIF)</h1>
+    <div class="bg-white p-6 rounded-lg shadow-xl w-full max-w-3xl">
+        <h1 class="text-3xl font-bold text-center mb-8 text-indigo-600">Центр Управления</h1>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            <div>
-                <label for="cameraIp" class="block text-sm font-medium text-gray-700">IP Камеры (ONVIF Host):</label>
-                <input type="text" id="cameraIp" value="192.168.0.167" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+        <div class="control-section">
+            <h2 class="text-xl font-semibold text-center mb-4 text-blue-700">Управление Камерой (ONVIF)</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label for="cameraIp" class="block text-sm font-medium text-gray-700">IP Камеры (ONVIF Host):</label>
+                    <input type="text" id="cameraIp" value="192.168.0.167" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="rtspUrl" class="block text-sm font-medium text-gray-700">RTSP URL (для видео):</label>
+                    <input type="text" id="rtspUrl" value="rtsp://admin:123456@192.168.0.167:554" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="onvifUser" class="block text-sm font-medium text-gray-700">ONVIF Пользователь:</label>
+                    <input type="text" id="onvifUser" value="admin" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="onvifPassword" class="block text-sm font-medium text-gray-700">ONVIF Пароль:</label>
+                    <input type="password" id="onvifPassword" value="123456" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+                <div>
+                    <label for="cameraType" class="block text-sm font-medium text-gray-700">Тип Камеры:</label>
+                    <select id="cameraType" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                        <option value="YCC365" selected>YCC365</option>
+                        <option value="YOOSEE">YOOSEE</option>
+                        <option value="Y05">Y05</option>
+                    </select>
+                </div>
+                 <div>
+                    <label for="invertUpDown" class="flex items-center mt-7">
+                        <input type="checkbox" id="invertUpDown" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                        <span class="ml-2 text-sm text-gray-700">Инверт. Tilt (Камера)</span>
+                    </label>
+                </div>
             </div>
-            <div>
-                <label for="rtspUrl" class="block text-sm font-medium text-gray-700">RTSP URL (для видеопотока):</label>
-                <input type="text" id="rtspUrl" value="rtsp://admin:123456@192.168.0.167:554" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+
+            <div class="mb-4 border-2 border-blue-300 rounded-lg overflow-hidden aspect-video bg-black flex items-center justify-center">
+                <img id="videoStream" src="https://placehold.co/640x360/000000/FFFFFF?text=Видеопоток+с+камеры%0A(нажмите+%22Запустить+видео%22)" alt="Видеопоток с камеры" class="w-full h-full object-contain">
             </div>
-            <div>
-                <label for="onvifUser" class="block text-sm font-medium text-gray-700">ONVIF Пользователь:</label>
-                <input type="text" id="onvifUser" value="admin" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            <button id="startStreamButton" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-md mb-4">
+                Запустить/Обновить видео
+            </button>
+
+            <div class="grid grid-cols-3 gap-2 justify-items-center mb-2">
+                <div></div> <button id="ptzUp" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8593; (ArrowUp)</button> <div></div>
+                <button id="ptzLeft" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8592; (ArrowLeft)</button>
+                <button id="ptzStop" class="ptz-button bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-full w-24 h-24 flex items-center justify-center text-sm">СТОП</button>
+                <button id="ptzRight" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8594; (ArrowRight)</button>
+                <div></div> <button id="ptzDown" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8595; (ArrowDown)</button> <div></div>
             </div>
-            <div>
-                <label for="onvifPassword" class="block text-sm font-medium text-gray-700">ONVIF Пароль:</label>
-                <input type="password" id="onvifPassword" value="123456" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-            </div>
-            <div>
-                <label for="cameraType" class="block text-sm font-medium text-gray-700">Тип Камеры:</label>
-                <select id="cameraType" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                    <option value="YCC365" selected>YCC365</option>
-                    <option value="YOOSEE">YOOSEE</option>
-                    <option value="Y05">Y05</option>
-                </select>
-            </div>
-             <div>
-                <label for="invertUpDown" class="flex items-center mt-7">
-                    <input type="checkbox" id="invertUpDown" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
-                    <span class="ml-2 text-sm text-gray-700">Инвертировать Вверх/Вниз</span>
-                </label>
+            <div class="grid grid-cols-2 gap-2 justify-items-center">
+                <button id="ptzZoomIn" class="ptz-button bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-md w-full">Zoom + (Z)</button>
+                <button id="ptzZoomOut" class="ptz-button bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-md w-full">Zoom - (X)</button>
             </div>
         </div>
 
-        <div class="mb-6 border-2 border-blue-300 rounded-lg overflow-hidden aspect-video bg-black flex items-center justify-center">
-            <img id="videoStream" src="https://placehold.co/640x360/000000/FFFFFF?text=Видеопоток+с+камеры%0A(нажмите+%22Запустить+видео%22)" alt="Видеопоток с камеры" class="w-full h-full object-contain">
-        </div>
-        <button id="startStreamButton" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-md mb-4">
-            Запустить/Обновить видео
-        </button>
+        <div class="control-section">
+            <h2 class="text-xl font-semibold text-center mb-4 text-green-700">Управление Платформой</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                 <div>
+                    <label for="platformIp" class="block text-sm font-medium text-gray-700">IP Платформы:</label>
+                    <input type="text" id="platformIp" value="http://192.168.0.155" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-green-500 focus:border-green-500 sm:text-sm">
+                </div>
+                 <div>
+                    <button id="platformHandbrake" class="platform-button w-full mt-7 bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-md">Handbrake (Пробел)</button>
+                </div>
+            </div>
 
-        <div class="grid grid-cols-3 gap-2 justify-items-center mb-4">
-            <div></div> <button id="ptzUp" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-24">&#8593; (W)</button>
-            <div></div>
-
-            <button id="ptzLeft" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-24">&#8592; (A)</button>
-            <button id="ptzStop" class="ptz-button bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-full w-24 h-24 flex items-center justify-center text-sm">СТОП (Пробел)</button>
-            <button id="ptzRight" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-24">&#8594; (D)</button>
-
-            <div></div>
-            <button id="ptzDown" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-24">&#8595; (S)</button>
-            <div></div>
-        </div>
-        <div class="grid grid-cols-2 gap-2 justify-items-center mb-6">
-            <button id="ptzZoomIn" class="ptz-button bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-md w-full">Zoom + (Z)</button>
-            <button id="ptzZoomOut" class="ptz-button bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-md w-full">Zoom - (X)</button>
+            <div class="mb-2">
+                <p class="text-sm font-medium text-gray-700 text-center">Газ (W/S): <span id="platformThrottleValue" class="font-bold">0%</span></p>
+                <div class="bar-container">
+                    <div id="platformThrottleBar" class="bar"></div>
+                    <div id="platformThrottleBarText" class="bar-text">0%</div>
+                </div>
+            </div>
+            <div class="mb-4">
+                <p class="text-sm font-medium text-gray-700 text-center">Руль (A/D): <span id="platformSteeringValue" class="font-bold">0</span></p>
+                <div class="bar-container">
+                    <div id="platformSteeringBar" class="bar bg-purple-600"></div>
+                     <div id="platformSteeringBarText" class="bar-text">0</div>
+                </div>
+            </div>
+             <div class="grid grid-cols-2 gap-4 text-center mb-2">
+                <div><p class="text-sm text-gray-600">Отправлено L: <span id="platformSentLeft" class="font-semibold">N/A</span></p></div>
+                <div><p class="text-sm text-gray-600">Отправлено R: <span id="platformSentRight" class="font-semibold">N/A</span></p></div>
+            </div>
+            <div class="text-center text-sm text-gray-500">Нажатые клавиши (платформа): <span id="platformKeysPressed" class="font-semibold">None</span></div>
+            <div id="platformNotification" class="notification-area">Уведомления платформы</div>
         </div>
         
-        <div id="loader" class="loader" style="display: none;"></div> <div class="mt-4">
-            <h3 class="text-lg font-semibold mb-2 text-gray-700">Логи:</h3>
-            <div id="logOutput" class="h-32 overflow-y-auto bg-gray-50 p-3 border border-gray-300 rounded-md text-sm">
+        <div id="loader" class="loader" style="display: none;"></div>
+        <div class="mt-6">
+            <h3 class="text-lg font-semibold mb-2 text-gray-700">Общие Логи:</h3>
+            <div id="logOutput" class="h-40 overflow-y-auto bg-gray-50 p-3 border border-gray-300 rounded-md text-sm">
                 Логи будут отображаться здесь...
             </div>
         </div>
     </div>
 
-    <script src="/static/js/main.js"></script> </body>
+    <script src="/static/js/PlatformController.js"></script>
+</body>
 </html>

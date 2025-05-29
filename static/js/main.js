@@ -1,122 +1,66 @@
-// main.js
-
 // --- Глобальные/модульные переменные для DOM элементов ---
 let logOutputElement = null;
 let loaderElement = null;
+
+// --- Камера ---
 let videoStreamImgElement = null;
+let cameraIpInput, rtspUrlInput, onvifUserInput, onvifPasswordInput, cameraTypeSelect, invertUpDownCheckbox;
+let ONVIF_HOST_CONFIG, ONVIF_USER_CONFIG, ONVIF_PASSWORD_CONFIG, RTSP_URL_CONFIG, SELECTED_CAMERA_TYPE_NAME_CONFIG, IS_INVERT_UPDOWN_PTZ_CONFIG;
+const PTZ_MOVE_TIME_MS = 0.4 * 1000;
+const CAMERA_PAN_SPEED_CONFIG = 0.5;
+const CAMERA_TILT_SPEED_CONFIG = 0.5;
+const CAMERA_ZOOM_SPEED_CONFIG = 0.5;
+const BACKEND_BASE_URL = 'http://localhost:5000'; // URL вашего Flask бэкенда
+let ptzMoveTimeoutId = null;
+let isCurrentlyMovingPtz = false;
 
-// --- Конфигурационные переменные (будут заполняться из HTML) ---
-let ONVIF_HOST_CONFIG;
-let ONVIF_USER_CONFIG;
-let ONVIF_PASSWORD_CONFIG;
-let RTSP_URL_CONFIG;
-let SELECTED_CAMERA_TYPE_NAME_CONFIG;
-let IS_INVERT_UPDOWN_PTZ_CONFIG;
+// --- Платформа ---
+let platformControllerInstance;
+let platformIpInputElem;
+let platformThrottleBar, platformThrottleValue, platformThrottleBarText;
+let platformSteeringBar, platformSteeringValue, platformSteeringBarText;
+let platformSentLeftElem, platformSentRightElem;
+let platformKeysPressedElem;
+let platformNotificationElem;
+let platformHandbrakeButton;
 
-// --- Константы PTZ ---
-const PTZ_MOVE_TIME_MS = 0.4 * 1000; // Время движения в миллисекундах
-const PAN_SPEED_CONFIG = 0.5;
-const TILT_SPEED_CONFIG = 0.5;
-const ZOOM_SPEED_CONFIG = 0.5;
 
-// --- URL Бэкенда ---
-const BACKEND_BASE_URL = 'http://localhost:5000'; // Замените, если ваш бэкенд на другом адресе/порту
-
-// --- Функции Логирования и UI ---
+// --- Функции Логирования и UI (Общие) ---
 function logger(message, type = 'info') {
     if (!logOutputElement) {
-        console[type === 'error' ? 'error' : 'log'](`(Log element not ready) ${type.toUpperCase()}: ${message}`);
+        console[type === 'error' ? 'error' : 'log'](`(Log Elem Not Ready) ${type.toUpperCase()}: ${message}`);
         return;
     }
     const now = new Date().toLocaleTimeString();
     const p = document.createElement('p');
     p.textContent = `[${now}] ${type.toUpperCase()}: ${message}`;
-
     if (type === 'error') p.style.color = 'red';
     else if (type === 'success') p.style.color = 'green';
-    
     logOutputElement.appendChild(p);
     logOutputElement.scrollTop = logOutputElement.scrollHeight;
     console[type === 'error' ? 'error' : 'log'](message);
 }
 
 function showLoader() {
-    if (loaderElement) {
-        loaderElement.style.display = 'block';
-    } else {
-        console.warn("Элемент индикатора загрузки 'loader' не найден. Не могу показать.");
-    }
+    if (loaderElement) loaderElement.style.display = 'block';
 }
 
 function hideLoader() {
-    if (loaderElement) {
-        loaderElement.style.display = 'none';
-    } else {
-        console.warn("Элемент индикатора загрузки 'loader' не найден. Не могу скрыть.");
-    }
+    if (loaderElement) loaderElement.style.display = 'none';
 }
 
-// --- Функции для ONVIF PTZ управления ---
-const CAMERA_PARAMS_CONFIG = {
-    YOOSEE: { profile: "IPCProfilesToken1", servicePath: ":5000/onvif/ptz_service" },
-    YCC365: { profile: "Profile_1", servicePath: "/onvif/PTZ" },
-    Y05:    { profile: "PROFILE_000", servicePath: ":6688/onvif/ptz_service" }
-};
-
-function getCameraOnvifParamsDetail(cameraType) {
-    return CAMERA_PARAMS_CONFIG[cameraType] || null;
+// --- Функции для Управления Камерой (ONVIF PTZ) ---
+function updateCameraConfigValues() {
+    ONVIF_HOST_CONFIG = cameraIpInput.value;
+    ONVIF_USER_CONFIG = onvifUserInput.value;
+    ONVIF_PASSWORD_CONFIG = onvifPasswordInput.value;
+    RTSP_URL_CONFIG = rtspUrlInput.value;
+    SELECTED_CAMERA_TYPE_NAME_CONFIG = cameraTypeSelect.value;
+    IS_INVERT_UPDOWN_PTZ_CONFIG = invertUpDownCheckbox.checked;
+    logger("Конфигурация камеры обновлена.");
 }
 
-function generateNonceForOnvif(length = 24) {
-    let result = '';
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < length; i++) {
-        result += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-    return result;
-}
-
-async function generateOnvifWsSecurityHeaderJS(user, password) {
-    const createdDate = new Date().toISOString();
-    const nonceStr = generateNonceForOnvif();
-    const nonceBase64 = btoa(nonceStr);
-
-    const encoder = new TextEncoder();
-    const nonceBytes = encoder.encode(nonceStr);
-    const createdBytes = encoder.encode(createdDate);
-    const passwordBytes = encoder.encode(password);
-
-    const combinedData = new Uint8Array(nonceBytes.length + createdBytes.length + passwordBytes.length);
-    combinedData.set(nonceBytes, 0);
-    combinedData.set(createdBytes, nonceBytes.length);
-    combinedData.set(passwordBytes, nonceBytes.length + createdBytes.length);
-    
-    const hashBuffer = await crypto.subtle.digest('SHA-1', combinedData);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const passwordDigest = btoa(String.fromCharCode(...hashArray));
-
-    return `
-    <s:Header>
-        <Security s:mustUnderstand="1" xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
-            <UsernameToken>
-                <Username>${user}</Username>
-                <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">${passwordDigest}</Password>
-                <Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">${nonceBase64}</Nonce>
-                <Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">${createdDate}</Created>
-            </UsernameToken>
-        </Security>
-    </s:Header>`;
-}
-
-// Эта функция больше не нужна на фронтенде, т.к. бэкенд строит SOAP.
-// Оставлена для справки, если бы логика была другой.
-/*
-async function buildOnvifEnvelopeJS(user, password, serviceContent, cameraType) {
-    // ...
-}
-*/
-
-async function sendOnvifRequestToBackend(ptzAction, panSpeed = 0, tiltSpeed = 0, zoomSpeed = 0) {
+async function sendCameraPtzRequestToBackend(ptzAction, panSpeed = 0, tiltSpeed = 0, zoomSpeed = 0) {
     showLoader();
     const requestUrl = `${BACKEND_BASE_URL}/api/ptz`;
     const payload = {
@@ -133,190 +77,318 @@ async function sendOnvifRequestToBackend(ptzAction, panSpeed = 0, tiltSpeed = 0,
         payload.zoom = zoomSpeed;
     }
 
-    logger(`Отправка PTZ команды: ${ptzAction} на ${requestUrl}`);
-    
+    logger(`Камера: Отправка PTZ команды: ${ptzAction} на ${requestUrl}`);
     try {
         const response = await fetch(requestUrl, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-
         const responseData = await response.json();
-
         if (response.ok && responseData.status === 'success') {
-            logger(`PTZ ${ptzAction} успешно: ${responseData.message}`, 'success');
+            logger(`Камера: PTZ ${ptzAction} успешно: ${responseData.message}`, 'success');
         } else {
-            const errorMsg = responseData.message || `HTTP ${response.status}`;
-            logger(`Ошибка PTZ ${ptzAction}: ${errorMsg}. Детали: ${responseData.details || ''}`, 'error');
+            logger(`Камера: Ошибка PTZ ${ptzAction}: ${responseData.message || `HTTP ${response.status}`}. Детали: ${responseData.details || ''}`, 'error');
         }
     } catch (e) {
-        logger(`Исключение при PTZ ${ptzAction}: ${e.message}`, 'error');
+        logger(`Камера: Исключение при PTZ ${ptzAction}: ${e.message}`, 'error');
     } finally {
         hideLoader();
     }
 }
 
-async function ptzStopRequestCommand() {
-    await sendOnvifRequestToBackend('stop');
+async function cameraPtzStopCommand() {
+    await sendCameraPtzRequestToBackend('stop');
 }
 
-async function ptzContinuousMoveRequestCommand(x, y, z) {
-    await sendOnvifRequestToBackend('move', x, y, z);
+async function cameraPtzContinuousMoveCommand(x, y, z) {
+    await sendCameraPtzRequestToBackend('move', x, y, z);
 }
 
-// --- Управление состоянием движения PTZ и авто-остановка ---
-let ptzMoveTimeoutId = null;
-let isCurrentlyMovingPtz = false;
-
-function startPtzMovement(x, y, z) {
+function startCameraPtzMovement(x, y, z) {
     if (ptzMoveTimeoutId) clearTimeout(ptzMoveTimeoutId);
     isCurrentlyMovingPtz = true;
-    ptzContinuousMoveRequestCommand(x, y, z);
+    cameraPtzContinuousMoveCommand(x, y, z);
     ptzMoveTimeoutId = setTimeout(() => {
         if (isCurrentlyMovingPtz) {
-            logger("Авто-остановка PTZ движения.");
-            ptzStopRequestCommand(); // Используем команду для бэкенда
+            logger("Камера: Авто-остановка PTZ движения.");
+            cameraPtzStopCommand();
             isCurrentlyMovingPtz = false;
         }
     }, PTZ_MOVE_TIME_MS);
 }
 
-function stopPtzMovement() {
+function stopCameraPtzMovement() {
     if (ptzMoveTimeoutId) clearTimeout(ptzMoveTimeoutId);
     if (isCurrentlyMovingPtz) {
-        ptzStopRequestCommand(); // Используем команду для бэкенда
+        cameraPtzStopCommand();
         isCurrentlyMovingPtz = false;
     }
 }
 
-// --- Обновление конфигурации из HTML ---
-function updateAllConfigValues() {
-    ONVIF_HOST_CONFIG = document.getElementById('cameraIp').value;
-    ONVIF_USER_CONFIG = document.getElementById('onvifUser').value;
-    ONVIF_PASSWORD_CONFIG = document.getElementById('onvifPassword').value;
-    RTSP_URL_CONFIG = document.getElementById('rtspUrl').value;
-    SELECTED_CAMERA_TYPE_NAME_CONFIG = document.getElementById('cameraType').value;
-    IS_INVERT_UPDOWN_PTZ_CONFIG = document.getElementById('invertUpDown').checked;
-    logger("Конфигурация обновлена из HTML полей.");
+// --- Функции для Управления Платформой ---
+function updatePlatformUI(state) {
+    if (!platformThrottleBar || !platformSteeringBar) return; // Guard if elements not ready
+
+    // Обновление индикатора газа
+    let throttlePercent = (state.throttle / platformControllerInstance.config.MAX_THROTTLE) * 50;
+    platformThrottleBar.style.width = Math.abs(throttlePercent * 2) + '%';
+    if (state.throttle >= 0) {
+        platformThrottleBar.style.left = '50%';
+        platformThrottleBar.style.backgroundColor = '#4CAF50'; // Green for forward
+    } else {
+        platformThrottleBar.style.left = (50 - Math.abs(throttlePercent * 2)) + '%';
+        platformThrottleBar.style.backgroundColor = '#f44336'; // Red for reverse
+    }
+    platformThrottleValue.textContent = `${Math.round(state.throttle)}%`;
+    platformThrottleBarText.textContent = `${Math.round(state.throttle)}%`;
+
+
+    // Обновление индикатора руля
+    let steeringPercent = (state.steering / platformControllerInstance.config.MAX_STEERING) * 50;
+    platformSteeringBar.style.width = Math.abs(steeringPercent * 2) + '%';
+    if (state.steering >= 0) {
+        platformSteeringBar.style.left = '50%';
+    } else {
+        platformSteeringBar.style.left = (50 - Math.abs(steeringPercent * 2)) + '%';
+    }
+    platformSteeringValue.textContent = `${Math.round(state.steering)}`;
+    platformSteeringBarText.textContent = `${Math.round(state.steering)}`;
+
+    // Нажатые клавиши
+    platformKeysPressedElem.textContent = Object.keys(state.keysPressed).join(', ') || 'None';
+
+    // Кнопка ручного тормоза
+    if (state.handbrakeOn) {
+        platformHandbrakeButton.style.backgroundColor = '#ef4444'; // Red
+        platformHandbrakeButton.textContent = "Handbrake ON (Пробел)";
+    } else {
+        platformHandbrakeButton.style.backgroundColor = '#6b7280'; // Gray
+        platformHandbrakeButton.textContent = "Handbrake (Пробел)";
+    }
+
+    // Уведомления и отправленные значения
+    if (state.lastError) {
+        showPlatformNotification(`Ошибка: ${state.lastError.message}`, 'error');
+        platformSentLeftElem.textContent = "Err";
+        platformSentRightElem.textContent = "Err";
+    } else if (state.lastSentData && state.lastSentData.actual_motor_L !== undefined) {
+        platformSentLeftElem.textContent = state.lastSentData.actual_motor_L;
+        platformSentRightElem.textContent = state.lastSentData.actual_motor_R;
+        // Можно добавить короткое уведомление об успехе, но может быть слишком часто
+        // showPlatformNotification(`Отправлено: L ${state.lastSentData.actual_motor_L}, R ${state.lastSentData.actual_motor_R}`, 'success', 1000);
+    } else { // Если нет ошибки и нет данных (например, при инициализации)
+        platformSentLeftElem.textContent = "N/A";
+        platformSentRightElem.textContent = "N/A";
+    }
 }
 
-// --- Инициализация и обработчики событий ---
+function showPlatformNotification(message, type, duration = 3000) {
+    if (!platformNotificationElem) return;
+    platformNotificationElem.textContent = message;
+    platformNotificationElem.className = `notification-area ${type}`;
+    platformNotificationElem.style.display = 'block';
+    if (platformNotificationElem.timer) clearTimeout(platformNotificationElem.timer);
+    platformNotificationElem.timer = setTimeout(() => {
+        platformNotificationElem.style.display = 'none';
+    }, duration);
+}
+
+
+// --- Инициализация и общие обработчики событий ---
 document.addEventListener('DOMContentLoaded', () => {
-    // Инициализация DOM элементов
+    // Общие элементы
     logOutputElement = document.getElementById('logOutput');
     loaderElement = document.getElementById('loader');
+
+    // --- Инициализация Камеры ---
     videoStreamImgElement = document.getElementById('videoStream');
+    cameraIpInput = document.getElementById('cameraIp');
+    rtspUrlInput = document.getElementById('rtspUrl');
+    onvifUserInput = document.getElementById('onvifUser');
+    onvifPasswordInput = document.getElementById('onvifPassword');
+    cameraTypeSelect = document.getElementById('cameraType');
+    invertUpDownCheckbox = document.getElementById('invertUpDown');
 
-    // Проверки на наличие критически важных элементов
-    if (!logOutputElement) {
-        console.error("КРИТИЧЕСКАЯ ОШИБКА: HTML-элемент с ID 'logOutput' не найден!");
-        alert("Ошибка: элемент для вывода логов не найден.");
+    if (!videoStreamImgElement || !cameraIpInput || !rtspUrlInput || !onvifUserInput || !onvifPasswordInput || !cameraTypeSelect || !invertUpDownCheckbox) {
+        logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для управления камерой найдены!", "error");
+        alert("Ошибка: Не все элементы для управления камерой найдены.");
+        return;
     }
-    if (!loaderElement) {
-        console.error("КРИТИЧЕСКАЯ ОШИБКА: HTML-элемент с ID 'loader' не найден!");
-        alert("Ошибка: элемент индикатора загрузки не найден.");
-    }
-    if (!videoStreamImgElement) {
-        console.error("КРИТИЧЕСКАЯ ОШИБКА: HTML-элемент с ID 'videoStream' не найден!");
-        alert("Ошибка: элемент для отображения видео не найден.");
-    }
-
-    updateAllConfigValues(); // Первоначальное считывание конфига
-
-    // Обновление конфига при изменении полей
-    ['cameraIp', 'onvifUser', 'onvifPassword', 'rtspUrl', 'cameraType', 'invertUpDown'].forEach(id => {
-        const element = document.getElementById(id);
-        if (element) {
-            element.addEventListener('change', updateAllConfigValues);
-        }
+    updateCameraConfigValues();
+    [cameraIpInput, onvifUserInput, onvifPasswordInput, rtspUrlInput, cameraTypeSelect, invertUpDownCheckbox].forEach(el => {
+        el.addEventListener('change', updateCameraConfigValues);
     });
-    
-    // --- Обработчики для кнопок PTZ ---
+
     const ptzControlConfig = [
-        { id: 'ptzUp',    x: 0, y: () => IS_INVERT_UPDOWN_PTZ_CONFIG ? -TILT_SPEED_CONFIG : TILT_SPEED_CONFIG, z: 0, key: 'w' },
-        { id: 'ptzDown',  x: 0, y: () => IS_INVERT_UPDOWN_PTZ_CONFIG ? TILT_SPEED_CONFIG : -TILT_SPEED_CONFIG, z: 0, key: 's' },
-        { id: 'ptzLeft',  x: -PAN_SPEED_CONFIG, y: 0, z: 0, key: 'a' },
-        { id: 'ptzRight', x: PAN_SPEED_CONFIG,  y: 0, z: 0, key: 'd' },
-        { id: 'ptzZoomIn',x: 0, y: 0, z: ZOOM_SPEED_CONFIG, key: 'z' },
-        { id: 'ptzZoomOut',x:0, y: 0, z: -ZOOM_SPEED_CONFIG,key: 'x' }
+        { id: 'ptzUp',    key: 'arrowup',    action: () => startCameraPtzMovement(0, IS_INVERT_UPDOWN_PTZ_CONFIG ? -CAMERA_TILT_SPEED_CONFIG : CAMERA_TILT_SPEED_CONFIG, 0) },
+        { id: 'ptzDown',  key: 'arrowdown',  action: () => startCameraPtzMovement(0, IS_INVERT_UPDOWN_PTZ_CONFIG ? CAMERA_TILT_SPEED_CONFIG : -CAMERA_TILT_SPEED_CONFIG, 0) },
+        { id: 'ptzLeft',  key: 'arrowleft',  action: () => startCameraPtzMovement(-CAMERA_PAN_SPEED_CONFIG, 0, 0) },
+        { id: 'ptzRight', key: 'arrowright', action: () => startCameraPtzMovement(CAMERA_PAN_SPEED_CONFIG, 0, 0) },
+        { id: 'ptzZoomIn',key: 'z',          action: () => startCameraPtzMovement(0, 0, CAMERA_ZOOM_SPEED_CONFIG) },
+        { id: 'ptzZoomOut',key: 'x',         action: () => startCameraPtzMovement(0, 0, -CAMERA_ZOOM_SPEED_CONFIG) }
     ];
 
     ptzControlConfig.forEach(ctrl => {
         const button = document.getElementById(ctrl.id);
         if (button) {
-            const action = () => startPtzMovement(ctrl.x, typeof ctrl.y === 'function' ? ctrl.y() : ctrl.y, ctrl.z);
-            button.addEventListener('mousedown', action);
-            button.addEventListener('touchstart', (e) => { e.preventDefault(); action(); }, { passive: false });
-            
-            button.addEventListener('mouseup', stopPtzMovement);
-            button.addEventListener('mouseleave', stopPtzMovement);
-            button.addEventListener('touchend', stopPtzMovement);
-            button.addEventListener('touchcancel', stopPtzMovement);
+            button.addEventListener('mousedown', ctrl.action);
+            button.addEventListener('touchstart', (e) => { e.preventDefault(); ctrl.action(); }, { passive: false });
+            button.addEventListener('mouseup', stopCameraPtzMovement);
+            button.addEventListener('mouseleave', stopCameraPtzMovement);
+            button.addEventListener('touchend', stopCameraPtzMovement);
+            button.addEventListener('touchcancel', stopCameraPtzMovement);
         } else {
-            logger(`Кнопка PTZ с ID '${ctrl.id}' не найдена.`, 'error');
+            logger(`Камера: Кнопка PTZ с ID '${ctrl.id}' не найдена.`, 'error');
         }
     });
 
-    const stopButton = document.getElementById('ptzStop');
-    if (stopButton) {
-        stopButton.addEventListener('click', stopPtzMovement);
+    const cameraStopButton = document.getElementById('ptzStop');
+    if (cameraStopButton) {
+        cameraStopButton.addEventListener('click', stopCameraPtzMovement);
     } else {
-        logger("Кнопка 'ptzStop' не найдена.", 'error');
+        logger("Камера: Кнопка 'ptzStop' не найдена.", 'error');
     }
 
-    // --- Горячие клавиши ---
+    const startStreamButton = document.getElementById('startStreamButton');
+    if (startStreamButton) {
+        startStreamButton.addEventListener('click', () => {
+            if (!RTSP_URL_CONFIG) {
+                logger("Камера: RTSP URL не указан.", "error");
+                alert("Пожалуйста, введите RTSP URL для видеопотока.");
+                return;
+            }
+            const mjpegStreamUrl = `${BACKEND_BASE_URL}/api/video-stream?rtsp=${encodeURIComponent(RTSP_URL_CONFIG)}`;
+            logger(`Камера: Попытка загрузить видео с: ${mjpegStreamUrl}`);
+            videoStreamImgElement.src = mjpegStreamUrl;
+            videoStreamImgElement.onerror = () => {
+                logger("Камера: Ошибка загрузки видеопотока.", "error");
+                videoStreamImgElement.src = "https://placehold.co/640x360/000000/FFFFFF?text=Ошибка+видео%0A(проверьте+URL)";
+            };
+            videoStreamImgElement.onload = () => {
+                 logger("Камера: Видеопоток успешно загружен (или начата загрузка).", "success");
+            };
+        });
+    } else {
+        logger("Камера: Кнопка 'startStreamButton' не найдена.", 'error');
+    }
+
+
+    // --- Инициализация Платформы ---
+    platformIpInputElem = document.getElementById('platformIp');
+    platformThrottleBar = document.getElementById('platformThrottleBar');
+    platformThrottleValue = document.getElementById('platformThrottleValue');
+    platformThrottleBarText = document.getElementById('platformThrottleBarText');
+    platformSteeringBar = document.getElementById('platformSteeringBar');
+    platformSteeringValue = document.getElementById('platformSteeringValue');
+    platformSteeringBarText = document.getElementById('platformSteeringBarText');
+    platformSentLeftElem = document.getElementById('platformSentLeft');
+    platformSentRightElem = document.getElementById('platformSentRight');
+    platformKeysPressedElem = document.getElementById('platformKeysPressed');
+    platformNotificationElem = document.getElementById('platformNotification');
+    platformHandbrakeButton = document.getElementById('platformHandbrake');
+
+    if (!platformIpInputElem || !platformThrottleBar || !platformSteeringBar || !platformHandbrakeButton) {
+         logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для управления платформой найдены!", "error");
+        alert("Ошибка: Не все элементы для управления платформой найдены.");
+        return;
+    }
+
+    const platformConfig = {
+        baseUrl: platformIpInputElem.value || "http://192.168.0.155", // Default or from input
+        onUpdate: updatePlatformUI,
+        // controlParams: { MAX_THROTTLE: 80 } // Example
+    };
+    try {
+        platformControllerInstance = new PlatformController(platformConfig);
+        platformControllerInstance.start();
+        logger("Контроллер платформы инициализирован и запущен.");
+    } catch (e) {
+        logger(`Ошибка инициализации PlatformController: ${e.message}`, "error");
+        alert(`Ошибка инициализации PlatformController: ${e.message}. Убедитесь, что PlatformController.js загружен.`);
+        return;
+    }
+    
+
+    platformIpInputElem.addEventListener('change', () => {
+        if (platformControllerInstance) {
+            platformControllerInstance.setBaseUrl(platformIpInputElem.value);
+            logger(`Платформа: IP изменен на: ${platformIpInputElem.value}`);
+        }
+    });
+
+    platformHandbrakeButton.addEventListener('click', () => {
+        if (platformControllerInstance) platformControllerInstance.toggleHandbrake();
+    });
+
+
+    // --- Общие обработчики клавиатуры ---
+    const platformKeys = ['w', 'a', 's', 'd'];
+    const platformActionKeys = [' ']; // Space for handbrake
+    const cameraArrowKeys = ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+    const cameraZoomKeys = ['z', 'x'];
+
     document.addEventListener('keydown', (event) => {
         if (document.activeElement && ['input', 'select', 'textarea'].includes(document.activeElement.tagName.toLowerCase())) {
             return; // Не обрабатывать, если фокус на инпуте
         }
-        const control = ptzControlConfig.find(c => c.key === event.key.toLowerCase());
-        if (control && !isCurrentlyMovingPtz) {
+        
+        const key = event.key.toLowerCase();
+        let handled = false;
+
+        // Управление платформой
+        if (platformKeys.includes(key) && platformControllerInstance) {
+            platformControllerInstance.pressKey(key);
+            handled = true;
+        } else if (platformActionKeys.includes(key) && platformControllerInstance) {
+            if (key === ' ') platformControllerInstance.toggleHandbrake(); // Toggle on keydown
+            handled = true;
+        }
+        // Управление камерой
+        else if (cameraArrowKeys.includes(key) || cameraZoomKeys.includes(key)) {
+            if (!isCurrentlyMovingPtz) { // Только если не движется уже
+                const control = ptzControlConfig.find(c => c.key === key);
+                if (control) {
+                    control.action();
+                    handled = true;
+                }
+            }
+        }
+        
+        if (handled) {
             event.preventDefault();
-            startPtzMovement(control.x, typeof control.y === 'function' ? control.y() : control.y, control.z);
-        } else if (event.key === ' ' || event.code === 'Space') {
-            event.preventDefault();
-            stopPtzMovement();
         }
     });
+
     document.addEventListener('keyup', (event) => {
         if (document.activeElement && ['input', 'select', 'textarea'].includes(document.activeElement.tagName.toLowerCase())) {
             return; 
         }
-        const control = ptzControlConfig.find(c => c.key === event.key.toLowerCase());
-        if (control && isCurrentlyMovingPtz) {
-            event.preventDefault();
-            stopPtzMovement();
+
+        const key = event.key.toLowerCase();
+        let handled = false;
+
+        // Управление платформой
+        if (platformKeys.includes(key) && platformControllerInstance) {
+            platformControllerInstance.releaseKey(key);
+            handled = true;
         }
+        // Управление камерой
+        else if (cameraArrowKeys.includes(key) || cameraZoomKeys.includes(key)) {
+             if (isCurrentlyMovingPtz) {
+                const control = ptzControlConfig.find(c => c.key === key);
+                if (control) { // Проверяем, что это одна из клавиш, которая могла инициировать движение
+                    stopCameraPtzMovement();
+                    handled = true;
+                }
+            }
+        }
+        
+        // if (handled) { // preventDefault на keyup обычно не нужен, но можно добавить при необходимости
+        //     event.preventDefault();
+        // }
     });
 
-    // --- Кнопка запуска/обновления видеопотока ---
-    const startStreamButton = document.getElementById('startStreamButton');
-    if (startStreamButton && videoStreamImgElement) {
-        startStreamButton.addEventListener('click', () => {
-            const currentRtspUrl = document.getElementById('rtspUrl').value;
-            if (!currentRtspUrl) {
-                logger("RTSP URL не указан.", "error");
-                alert("Пожалуйста, введите RTSP URL для видеопотока.");
-                return;
-            }
-            const mjpegStreamUrl = `${BACKEND_BASE_URL}/api/video-stream?rtsp=${encodeURIComponent(currentRtspUrl)}`; 
-            logger(`Попытка загрузить видео с: ${mjpegStreamUrl}`);
-            videoStreamImgElement.src = mjpegStreamUrl;
-            videoStreamImgElement.onerror = () => {
-                logger("Ошибка загрузки видеопотока. Убедитесь, что бэкенд настроен, камера доступна и RTSP URL корректен.", "error");
-                videoStreamImgElement.src = "https://placehold.co/640x360/000000/FFFFFF?text=Ошибка+загрузки+видео%0A(проверьте+URL+и+бэкенд)";
-            };
-            videoStreamImgElement.onload = () => {
-                 logger("Видеопоток успешно загружен (или начата загрузка).", "success");
-            };
-        });
-    } else {
-        logger("Кнопка 'startStreamButton' или элемент 'videoStream' не найдены.", 'error');
-    }
-
-    logger("Интерфейс инициализирован. DOM загружен.");
-    hideLoader(); // Убедимся, что лоадер скрыт при начальной загрузке
+    logger("Полная инициализация интерфейса завершена.");
+    hideLoader();
 });
