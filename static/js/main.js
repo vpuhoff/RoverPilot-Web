@@ -3,7 +3,7 @@ let logOutputElement = null;
 let loaderContainerElement = null; // Changed from loaderElement
 
 // --- Камера ---
-let videoStreamImgElement = null;
+let videoStreamImgElement = null; // Для MJPEG
 let cameraIpInput, rtspUrlInput, onvifUserInput, onvifPasswordInput, cameraTypeSelect, invertUpDownCheckbox, startStreamButton;
 // ONVIF and RTSP config variables (populated by updateCameraConfigValues)
 let ONVIF_HOST_CONFIG, ONVIF_USER_CONFIG, ONVIF_PASSWORD_CONFIG, RTSP_URL_CONFIG, SELECTED_CAMERA_TYPE_NAME_CONFIG, IS_INVERT_UPDOWN_PTZ_CONFIG;
@@ -28,6 +28,20 @@ let platformConnectionStatusElem; // For WebSocket status
 
 // --- Configuration Panel ---
 let toggleConfigButton, closeConfigButton, configPanelContainer;
+
+// --- WebRTC Глобальные переменные ---
+let pc = null; // RTCPeerConnection
+let webRtcVideoElement = null; // Для WebRTC видео
+const RtcPeerConnectionConfig = {
+    'iceServers': [
+        { 'urls': 'stun:stun.l.google.com:19302' }
+        // {
+        //   'urls': 'turn:your.turn.server:3478',
+        //   'username': 'user',
+        //   'credential': 'password'
+        // }
+    ]
+};
 
 
 // --- Функции Логирования и UI (Общие) ---
@@ -147,17 +161,17 @@ function stopCameraPtzMovement() {
 
 // --- Функции для Управления Платформой ---
 
-// HUD-style notification
+// HUD-style notification (already provided by user, assumed to be this version)
 function showPlatformNotification(message, type, duration = 3000) {
     if (!platformNotificationElem) return;
-    
+
     platformNotificationElem.textContent = message;
     platformNotificationElem.classList.remove('hud-text-success', 'hud-text-error', 'hud-text-warning', 'hud-text-secondary');
 
     if (type === 'success') platformNotificationElem.classList.add('hud-text-success');
     else if (type === 'error') platformNotificationElem.classList.add('hud-text-error');
     else platformNotificationElem.classList.add('hud-text-secondary'); // Default color
-    
+
     if (platformNotificationElem.timer) clearTimeout(platformNotificationElem.timer);
     if (duration > 0) { // if duration is 0 or less, message stays until next call
         platformNotificationElem.timer = setTimeout(() => {
@@ -165,6 +179,7 @@ function showPlatformNotification(message, type, duration = 3000) {
         }, duration);
     }
 }
+
 
 function updatePlatformUI(state) {
     // Throttle Bar
@@ -217,17 +232,16 @@ function updatePlatformUI(state) {
     // Handbrake Button
     if (platformHandbrakeButton) {
         if (state.handbrakeOn) {
-            platformHandbrakeButton.classList.add('hud-button-critical'); // Assuming this class makes it look "active" or red
+            platformHandbrakeButton.classList.add('hud-button-critical');
             platformHandbrakeButton.textContent = "РУЧНИК ВКЛ (Пробел)";
         } else {
             platformHandbrakeButton.classList.remove('hud-button-critical');
             platformHandbrakeButton.textContent = "РУЧНИК (Пробел)";
         }
     }
-    
+
     // Display errors from PlatformController state
     if (state.lastError && state.lastError.message) {
-        // Check if the notification is already showing this error to avoid repetition if onUpdate is frequent
         if(platformNotificationElem && platformNotificationElem.textContent !== state.lastError.message) {
              showPlatformNotification(state.lastError.message, 'error', 5000);
         }
@@ -241,129 +255,216 @@ function updatePlatformConnectionStatusDisplay(status) {
         platformConnectionStatusElem.textContent = "ПОДКЛ...";
         platformConnectionStatusElem.className = "status-indicator connecting";
     } else if (status.isConnected) {
-        // platformConnectionStatusElem.textContent = `К ${status.wsUrl.replace(/ws:\/\//i, '').replace(/\/ws/i, '')}`; // Shorter URL
         platformConnectionStatusElem.textContent = "ОНЛАЙН";
         platformConnectionStatusElem.className = "status-indicator connected";
     } else {
         platformConnectionStatusElem.textContent = "ОФФЛАЙН";
         platformConnectionStatusElem.className = "status-indicator disconnected";
         if (!status.wsUrl || status.wsUrl === '') {
-           showPlatformNotification("URL платформы не задан. Проверьте настройки.", "error", 0); // Persistent until URL set
+           showPlatformNotification("URL платформы не задан. Проверьте настройки.", "error", 0);
         }
     }
 }
 
-// Update platform notification styling
-function showPlatformNotification(message, type, duration = 3000) {
-    const platformNotificationElem = document.getElementById('platformNotification');
-    if (!platformNotificationElem) return;
-    
-    platformNotificationElem.textContent = message;
-    platformNotificationElem.classList.remove('hud-text-success', 'hud-text-error', 'hud-text-warning'); // Clear previous types
+// --- WebRTC Функции ---
+function createPeerConnection() {
+    logger("WebRTC: Создание PeerConnection...");
+    pc = new RTCPeerConnection(RtcPeerConnectionConfig);
 
-    if (type === 'success') platformNotificationElem.classList.add('hud-text-success');
-    else if (type === 'error') platformNotificationElem.classList.add('hud-text-error');
-    else platformNotificationElem.classList.add('hud-text-secondary'); // Default
+    pc.onicecandidate = event => {
+        if (event.candidate) {
+            logger("WebRTC: Новый ICE кандидат от клиента: " + event.candidate.candidate.substring(0, 30) + "...");
+            // TODO: Отправить event.candidate на сервер (например, через WebSocket)
+            // Пример: sendToServerViaWebSocket({ type: 'ice-candidate', payload: event.candidate.toJSON() });
+            console.log("КЛИЕНТ: Кандидат для отправки на сервер:", event.candidate.toJSON());
+        } else {
+            logger("WebRTC: Сбор ICE кандидатов от клиента завершен.");
+        }
+    };
+
+    pc.ontrack = event => {
+        logger("WebRTC: Получен удаленный трек: " + event.track.kind);
+        if (event.streams && event.streams[0]) {
+            if (webRtcVideoElement) {
+                webRtcVideoElement.srcObject = event.streams[0];
+                logger("WebRTC: Удаленный поток привязан к video элементу.");
+            } else {
+                logger("WebRTC: Video элемент не найден для привязки потока.", "error");
+            }
+        } else {
+            let inboundStream = new MediaStream();
+            inboundStream.addTrack(event.track);
+            if (webRtcVideoElement) {
+                webRtcVideoElement.srcObject = inboundStream;
+                logger("WebRTC: Удаленный трек привязан к video элементу (через новый MediaStream).");
+            }
+        }
+    };
+
+    pc.oniceconnectionstatechange = event => {
+        logger("WebRTC: Состояние ICE соединения: " + pc.iceConnectionState);
+        if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'closed') {
+            logger("WebRTC: Соединение потеряно или закрыто.", "error");
+            showPlatformNotification("WebRTC: Соединение разорвано", "error");
+        }
+    };
+
+    pc.onconnectionstatechange = event => {
+        logger("WebRTC: Состояние соединения: " + pc.connectionState);
+         if (pc.connectionState === "connected") {
+            logger("WebRTC: Соединение установлено!", "success");
+            showPlatformNotification("WebRTC: Видео подключено", "success");
+            // Если MJPEG стрим был активен, его можно скрыть или остановить
+            if (videoStreamImgElement) videoStreamImgElement.src = "https://placehold.co/1920x1080/0a0f18/1e293b?text=WebRTC+Active";
+
+        }
+    };
+    return pc;
+}
+
+async function startWebRtcStream() {
+    if (!webRtcVideoElement) {
+        logger("WebRTC: HTML video элемент 'webRtcVideoElement' не найден.", "error");
+        showPlatformNotification("Ошибка: Video элемент для WebRTC не найден.", "error");
+        return;
+    }
+
+    if (pc && (pc.connectionState === "connected" || pc.connectionState === "connecting")) {
+        logger("WebRTC: Попытка запустить стрим, когда соединение уже есть или устанавливается. Игнорируем.", "warning");
+        return;
+    }
     
-    // No need to manage display: block/none as it's always visible in its panel
-    // If you want timed removal of text:
-    if (platformNotificationElem.timer) clearTimeout(platformNotificationElem.timer);
-    if (duration > 0) {
-        platformNotificationElem.timer = setTimeout(() => {
-            platformNotificationElem.textContent = '';
-        }, duration);
+    if (pc) {
+        logger("WebRTC: Закрытие предыдущего PeerConnection...");
+        try { pc.close(); } catch (e) { /* Игнор */ }
+    }
+    pc = createPeerConnection();
+
+    pc.addTransceiver('video', { 'direction': 'recvonly' });
+
+    try {
+        logger("WebRTC: Создание Offer...");
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        logger("WebRTC: LocalDescription (Offer) установлен.");
+
+        logger("WebRTC: Отправка Offer на сервер...");
+        showLoader(); // Показываем лоадер на время запроса
+        const response = await fetch(`${BACKEND_BASE_URL}/offer`, { // Используем BACKEND_BASE_URL
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sdp: offer.sdp,
+                type: offer.type,
+                // rtsp_url: RTSP_URL_CONFIG // Если сервер должен знать RTSP URL с клиента
+            })
+        });
+        hideLoader(); // Скрываем лоадер
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Ошибка сервера при отправке Offer: ${response.status} ${errorText}`);
+        }
+
+        const answer = await response.json();
+        logger("WebRTC: Получен Answer от сервера.");
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        logger("WebRTC: RemoteDescription (Answer) установлен.");
+
+    } catch (e) {
+        logger("WebRTC: Ошибка при старте стрима: " + e, "error");
+        showPlatformNotification("WebRTC: Ошибка старта: " + e.message, "error");
+        if (pc) { try { pc.close(); } catch (eClose) { /* Игнор */ } pc = null; }
+        hideLoader();
     }
 }
+
+function stopWebRtcStream() {
+    if (pc) {
+        logger("WebRTC: Остановка стрима и закрытие PeerConnection...");
+        pc.close();
+        pc = null;
+    }
+    if (webRtcVideoElement) {
+        webRtcVideoElement.srcObject = null;
+        webRtcVideoElement.load(); // Сброс video элемента
+    }
+    showPlatformNotification("WebRTC: Видео остановлено", "info");
+}
+
+// TODO: Эта функция должна вызываться, когда сервер присылает ICE кандидат (например, через WebSocket)
+function addIceCandidateFromServer(candidateData) {
+    if (pc) {
+        const candidate = new RTCIceCandidate(candidateData);
+        pc.addIceCandidate(candidate)
+            .then(() => {
+                logger("WebRTC: ICE кандидат от сервера успешно добавлен: " + candidate.candidate.substring(0,30) + "...");
+            })
+            .catch(e => {
+                logger("WebRTC: Ошибка добавления ICE кандидата от сервера: " + e, "error");
+            });
+    } else {
+        logger("WebRTC: PeerConnection не существует для добавления ICE кандидата от сервера.", "warning");
+    }
+}
+
 
 // --- Инициализация и общие обработчики событий ---
 document.addEventListener('DOMContentLoaded', () => {
     // Общие элементы
     logOutputElement = document.getElementById('logOutput');
-    if (logOutputElement && logOutputElement.innerHTML.trim() === '<p class="text-gray-500 text-xs italic">Логи будут здесь...</p>') {
-        // Keep placeholder or clear it: logOutputElement.innerHTML = '';
-    } else if (logOutputElement) {
-        // Clear any other default content if placeholder isn't there
-        // logOutputElement.innerHTML = '';
+    if (logOutputElement && logOutputElement.querySelector('.text-gray-500.italic')) {
+         logOutputElement.innerHTML = '<p class="log-placeholder text-gray-500 text-xs italic">Логи инициализации...</p>';
     }
-
 
     loaderContainerElement = document.getElementById('loaderContainer');
     platformConnectionStatusElem = document.getElementById('platformConnectionStatus');
 
     // Config Panel Elements
-    const toggleConfigButton = document.getElementById('toggleConfigButton');
-    const closeConfigButton = document.getElementById('closeConfigButton');
-    const configPanelContainer = document.getElementById('config-panel-container');
-
-    console.log("toggleConfigButton:", toggleConfigButton);
-    console.log("closeConfigButton:", closeConfigButton);
-    console.log("configPanelContainer:", configPanelContainer);
+    toggleConfigButton = document.getElementById('toggleConfigButton');
+    closeConfigButton = document.getElementById('closeConfigButton');
+    configPanelContainer = document.getElementById('config-panel-container');
 
     if (toggleConfigButton && closeConfigButton && configPanelContainer) {
-        toggleConfigButton.addEventListener('click', () => {
-            console.log("Кнопка 'Настройки' нажата - ПОКАЗЫВАЕМ панель");
-            configPanelContainer.classList.remove('hidden');
-        });
-    
-        closeConfigButton.addEventListener('click', () => {
-            console.log("Кнопка 'Крестик' (closeConfigButton) нажата - СКРЫВАЕМ панель");
-            configPanelContainer.classList.add('hidden');
-        });
-    
+        toggleConfigButton.addEventListener('click', () => configPanelContainer.classList.remove('hidden'));
+        closeConfigButton.addEventListener('click', () => configPanelContainer.classList.add('hidden'));
         configPanelContainer.addEventListener('click', (event) => {
-            console.log("Клик по области configPanelContainer. event.target:", event.target);
-            // event.currentTarget всегда будет configPanelContainer, если обработчик на нем.
-            // Нам нужно проверить, был ли клик непосредственно по фону, а не по дочерним элементам.
-            if (event.target === configPanelContainer) {
-                console.log("Клик был по фону (event.target === configPanelContainer) - СКРЫВАЕМ панель");
-                configPanelContainer.classList.add('hidden');
-            } else {
-                console.log("Клик был по дочернему элементу панели, не по фону.");
-            }
+            if (event.target === configPanelContainer) configPanelContainer.classList.add('hidden');
         });
     } else {
-        logger("Не удалось добавить обработчики для панели конфигурации, т.к. один из элементов (кнопки или контейнер) не найден.", "error");
+        logger("Элементы управления панелью конфигурации не найдены!", "error");
     }
-    
 
- 
     // --- Инициализация Камеры (элементы в Config Panel) ---
-    videoStreamImgElement = document.getElementById('videoStream');
+    videoStreamImgElement = document.getElementById('videoStream'); // Для MJPEG
+    webRtcVideoElement = document.getElementById('webRtcVideoStream'); // Для WebRTC
+
     cameraIpInput = document.getElementById('cameraIp');
     rtspUrlInput = document.getElementById('rtspUrl');
     onvifUserInput = document.getElementById('onvifUser');
     onvifPasswordInput = document.getElementById('onvifPassword');
     cameraTypeSelect = document.getElementById('cameraType');
     invertUpDownCheckbox = document.getElementById('invertUpDown');
-    startStreamButton = document.getElementById('startStreamButton');
+    startStreamButton = document.getElementById('startStreamButton'); // Эта кнопка теперь будет для WebRTC
 
-
-    if (!videoStreamImgElement || !cameraIpInput || !rtspUrlInput || !onvifUserInput || !onvifPasswordInput || !cameraTypeSelect || !invertUpDownCheckbox || !startStreamButton) {
-        logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для управления камерой найдены!", "error");
+    if (!videoStreamImgElement || !webRtcVideoElement || !cameraIpInput || !rtspUrlInput || !onvifUserInput || !onvifPasswordInput || !cameraTypeSelect || !invertUpDownCheckbox || !startStreamButton) {
+        logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для камеры и видео найдены!", "error");
     } else {
-        updateCameraConfigValues(); // Initial load of values
+        updateCameraConfigValues();
         [cameraIpInput, onvifUserInput, onvifPasswordInput, rtspUrlInput, cameraTypeSelect, invertUpDownCheckbox].forEach(el => {
             el.addEventListener('change', updateCameraConfigValues);
         });
 
+        // Переназначаем startStreamButton для WebRTC
         startStreamButton.addEventListener('click', () => {
-            if (!RTSP_URL_CONFIG) {
-                logger("Камера: RTSP URL не указан.", "error");
-                showPlatformNotification("RTSP URL не указан в настройках!", "error");
-                return;
-            }
-            const mjpegStreamUrl = `${BACKEND_BASE_URL}/api/video-stream?rtsp=${encodeURIComponent(RTSP_URL_CONFIG)}`;
-            logger(`Камера: Загрузка видео с: ${mjpegStreamUrl}`);
-            videoStreamImgElement.src = mjpegStreamUrl;
-            videoStreamImgElement.onerror = () => {
-                logger("Камера: Ошибка загрузки видеопотока.", "error");
-                videoStreamImgElement.src = "https://placehold.co/1920x1080/0a0f18/334155?text=Ошибка+видеопотока%0A(проверьте+URL+и+сервер)";
-                showPlatformNotification("Ошибка загрузки видеопотока!", "error");
-            };
-            videoStreamImgElement.onload = () => {
-                 logger("Камера: Видеопоток успешно загружен (или начата загрузка).", "success");
-                 // showPlatformNotification("Видеопоток запущен.", "success"); // Can be too much
-            };
+            logger("Кнопка 'Запустить видео' нажата, инициируем WebRTC стрим.");
+            updateCameraConfigValues(); // Убедимся, что RTSP_URL_CONFIG актуален, если сервер его ждет
+            
+            // Если вы хотите использовать MJPEG как fallback или для отладки,
+            // можно оставить старую логику здесь под условием или для другой кнопки.
+            // videoStreamImgElement.src = `${BACKEND_BASE_URL}/api/video-stream?rtsp=${encodeURIComponent(RTSP_URL_CONFIG)}`;
+            
+            startWebRtcStream();
         });
     }
 
@@ -382,7 +483,7 @@ document.addEventListener('DOMContentLoaded', () => {
             button.addEventListener('mousedown', ctrl.action);
             button.addEventListener('touchstart', (e) => { e.preventDefault(); ctrl.action(); }, { passive: false });
             button.addEventListener('mouseup', stopCameraPtzMovement);
-            button.addEventListener('mouseleave', stopCameraPtzMovement); // Stop if mouse leaves button while pressed
+            button.addEventListener('mouseleave', stopCameraPtzMovement);
             button.addEventListener('touchend', stopCameraPtzMovement);
             button.addEventListener('touchcancel', stopCameraPtzMovement);
         } else {
@@ -405,8 +506,8 @@ document.addEventListener('DOMContentLoaded', () => {
     platformSteeringBar = document.getElementById('platformSteeringBar');
     platformSteeringValue = document.getElementById('platformSteeringValue');
     platformSteeringBarText = document.getElementById('platformSteeringBarText');
-    platformActualLeftElem = document.getElementById('platformActualLeft'); // Corrected
-    platformActualRightElem = document.getElementById('platformActualRight'); // Corrected
+    platformActualLeftElem = document.getElementById('platformActualLeft');
+    platformActualRightElem = document.getElementById('platformActualRight');
     platformKeysPressedElem = document.getElementById('platformKeysPressed');
     platformNotificationElem = document.getElementById('platformNotification');
     platformHandbrakeButton = document.getElementById('platformHandbrake');
@@ -414,22 +515,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!platformIpInputElem || !platformThrottleBar || !platformSteeringBar || !platformHandbrakeButton || !platformActualLeftElem || !platformActualRightElem || !platformKeysPressedElem || !platformNotificationElem) {
          logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для управления платформой найдены!", "error");
     } else {
-        const initialPlatformIp = platformIpInputElem.value || "192.168.0.155"; // Default from input
+        const initialPlatformIp = platformIpInputElem.value || "192.168.0.155";
         const platformConfig = {
-            wsUrl: initialPlatformIp ? `ws://${initialPlatformIp}/ws` : '', // Formatted WS URL, or empty if IP is empty
+            wsUrl: initialPlatformIp ? `ws://${initialPlatformIp}/ws` : '',
             onUpdate: updatePlatformUI,
             onConnectionStatusChange: updatePlatformConnectionStatusDisplay,
-            // controlParams: { MAX_THROTTLE: 80 } // Example
         };
 
         try {
             platformControllerInstance = new PlatformController(platformConfig);
-            platformControllerInstance.start(); // Attempt to connect with initial or empty URL
+            platformControllerInstance.start();
             logger("Контроллер платформы инициализирован.");
         } catch (e) {
             logger(`Ошибка инициализации PlatformController: ${e.message}`, "error");
             alert(`Ошибка инициализации PlatformController: ${e.message}. Убедитесь, что PlatformController.js загружен.`);
-            return; // Stop further execution if controller fails
+            return;
         }
         
         platformIpInputElem.addEventListener('change', () => {
@@ -448,16 +548,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Общие обработчики клавиатуры ---
     const platformKeys = ['w', 'a', 's', 'd'];
-    const platformActionKeys = [' ']; // Space for handbrake
+    const platformActionKeys = [' '];
     const cameraArrowKeys = ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
-    const cameraZoomKeys = ['z', 'x']; // Kept from original for consistency
+    const cameraZoomKeys = ['z', 'x'];
 
     document.addEventListener('keydown', (event) => {
-        // Не обрабатывать, если фокус на инпуте (особенно в модальном окне настроек)
         if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'SELECT' || document.activeElement.tagName === 'TEXTAREA')) {
-            // Allow Space key for handbrake even if an input has focus, unless it's a textarea
             if (event.key === ' ' && document.activeElement.tagName !== 'TEXTAREA') {
-                 // Allow space if not textarea
+                // Allow space
             } else {
                 return;
             }
@@ -466,7 +564,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const key = event.key.toLowerCase();
         let handled = false;
 
-        // Управление платформой
         if (platformControllerInstance) {
             if (platformKeys.includes(key)) {
                 platformControllerInstance.pressKey(key);
@@ -477,11 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         
-        // Управление камерой (если панель конфигурации не активна, или если камера управляется всегда)
-        // For simplicity, allow camera keys if not focused on general input. More complex focus management for config panel might be needed.
         if (cameraArrowKeys.includes(key) || cameraZoomKeys.includes(key)) {
-            // Check if config panel is visible; if so, maybe disable camera keys?
-            // For now, only disable if already moving PTZ by key.
             if (!isCurrentlyMovingPtz) {
                 const control = ptzControlConfig.find(c => c.key === key);
                 if (control) {
@@ -497,28 +590,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     document.addEventListener('keyup', (event) => {
-        // No need to check for active input on keyup for releasing platform keys
         const key = event.key.toLowerCase();
-        let handled = false;
+        // let handled = false; // Not strictly needed for keyup if not preventing default
 
-        // Управление платформой
         if (platformControllerInstance && platformKeys.includes(key)) {
             platformControllerInstance.releaseKey(key);
-            handled = true;
+            // handled = true;
         }
         
-        // Управление камерой
         if (cameraArrowKeys.includes(key) || cameraZoomKeys.includes(key)) {
              if (isCurrentlyMovingPtz) {
                 const control = ptzControlConfig.find(c => c.key === key);
                 if (control) { 
                     stopCameraPtzMovement();
-                    handled = true;
+                    // handled = true;
                 }
             }
         }
     });
 
     logger("Полная инициализация интерфейса завершена.");
-    hideLoader(); // Ensure loader is hidden after all setup
+    hideLoader();
 });

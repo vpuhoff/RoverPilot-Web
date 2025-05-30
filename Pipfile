@@ -9,6 +9,8 @@ opencv-python = "*"
 requests = "*"
 colorama = "*"
 flask-cors = "*"
+aiortc = "*"
+uvicorn = "*"
 
 [dev-packages]
 
