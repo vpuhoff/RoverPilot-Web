@@ -1,3 +1,7 @@
+import base64
+from datetime import datetime, timezone
+import hashlib
+from random import random
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS # type: ignore
 import cv2 # type: ignore
@@ -7,6 +11,9 @@ import threading
 import logging # Используем стандартный logging
 from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription # type: ignore
 from aiortc.contrib.media import MediaPlayer, MediaRelay # type: ignore
+from enum import Enum
+
+import requests
 
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +25,24 @@ def logger_info(msg): print(f"INFO: {msg}")
 app = Flask(__name__)
 CORS(app)
 
+# ---  ONVIF  ---
+class CameraType(Enum):
+    YOOSEE = "YOOSEE"
+    YCC365 = "YCC365"
+    Y05 = "Y05"
+
+# Константы для ONVIF
+Y05_DEFAULT_PROFILE = "PROFILE_000"
+Y05_SERVICE_PATH = ":6688/onvif/ptz_service"
+
+YOOSEE_DEFAULT_PROFILE = "IPCProfilesToken1"
+YOOSEE_SERVICE_PATH = ":5000/onvif/ptz_service" 
+
+YCC365_DEFAULT_PROFILE = "Profile_1"
+YCC365_SERVICE_PATH = "/onvif/PTZ"
+YCC365_DEFAULT_HEADERS = {'Content-Type': 'application/soap+xml;charset=UTF8'}
+
+
 pcs = set() # Хранилище для RTCPeerConnection объектов
 # RTSP URL можно будет передавать через запрос или конфигурацию
 DEFAULT_RTSP_URL = "rtsp://admin:123456@192.168.0.167:554" # Замените на ваш URL
@@ -27,6 +52,61 @@ rtsp_video_track_source = None # Источник трека от MediaPlayer д
 # Глобальный asyncio loop для фоновых задач WebRTC и RTSP
 background_loop = None
 rtsp_thread = None
+
+def get_camera_onvif_params(camera_type_enum_str):
+    try:
+        camera_type_enum = CameraType[camera_type_enum_str.upper()]
+    except KeyError:
+        logger_error(f"Неверный тип камеры: {camera_type_enum_str}")
+        return None, None
+
+    if camera_type_enum == CameraType.Y05:
+        return Y05_DEFAULT_PROFILE, Y05_SERVICE_PATH
+    elif camera_type_enum == CameraType.YOOSEE:
+        return YOOSEE_DEFAULT_PROFILE, YOOSEE_SERVICE_PATH
+    elif camera_type_enum == CameraType.YCC365:
+        return YCC365_DEFAULT_PROFILE, YCC365_SERVICE_PATH
+    return None, None
+
+def generate_onvif_wssecurity_header(user, password):
+    creation_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    nonce_str = ''.join(random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", k=24))
+    nonce_base64 = base64.b64encode(nonce_str.encode('utf-8')).decode('ascii')
+    
+    nonce_bytes = nonce_str.encode('utf-8')
+    created_bytes = creation_date.encode('utf-8')
+    password_bytes = password.encode('utf-8')
+    
+    sha1_hash = hashlib.sha1(nonce_bytes + created_bytes + password_bytes).digest()
+    password_digest_final = base64.b64encode(sha1_hash).decode('ascii')
+
+    security_header = f"""
+    <s:Header>
+        <Security s:mustUnderstand="1" xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+            <UsernameToken>
+                <Username>{user}</Username>
+                <Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">{password_digest_final}</Password>
+                <Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">{nonce_base64}</Nonce>
+                <Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">{creation_date}</Created>
+            </UsernameToken>
+        </Security>
+    </s:Header>"""
+    return security_header
+
+def build_onvif_envelope(user, password, service_content, camera_type_enum_str):
+    header_part = ""
+    if camera_type_enum_str.upper() in [CameraType.YOOSEE.name, CameraType.Y05.name]:
+        header_part = generate_onvif_wssecurity_header(user, password)
+
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    {header_part}
+    <s:Body>
+    {service_content}
+    </s:Body>
+</s:Envelope>"""
 
 # --- WebRTC Функции ---
 async def create_rtsp_track_source(relay, rtsp_url):
@@ -236,11 +316,11 @@ def ptz_control():
     data = request.json
     logger_info(f"Получен PTZ запрос: {data}")
 
-    camera_ip = data.get('camera_ip')
-    onvif_user = data.get('onvif_user')
-    onvif_password = data.get('onvif_password')
-    camera_type = data.get('camera_type')
-    action = data.get('action') 
+    camera_ip = data.get('camera_ip') # type: ignore
+    onvif_user = data.get('onvif_user') # type: ignore
+    onvif_password = data.get('onvif_password') # type: ignore
+    camera_type = data.get('camera_type') # type: ignore
+    action = data.get('action')  # type: ignore
 
     if not all([camera_ip, onvif_user, onvif_password, camera_type, action]):
         return jsonify({"status": "error", "message": "Отсутствуют обязательные параметры"}), 400
@@ -248,9 +328,9 @@ def ptz_control():
     SELECTED_CAMERA_TYPE_NAME_GLOBAL = camera_type 
 
     if action == 'move':
-        pan = data.get('pan', 0.0)
-        tilt = data.get('tilt', 0.0)
-        zoom = data.get('zoom', 0.0)
+        pan = data.get('pan', 0.0) # type: ignore
+        tilt = data.get('tilt', 0.0) # type: ignore
+        zoom = data.get('zoom', 0.0) # type: ignore
         return send_ptz_request(camera_ip, camera_type, onvif_user, onvif_password, 
                                 build_continuous_move_content, "ContinuousMove",
                                 x=pan, y=tilt, z=zoom)
@@ -270,7 +350,7 @@ def cleanup_webrtc_resources():
         # Закрываем все активные PeerConnections
         if pcs:
             close_tasks = [pc.close() for pc in list(pcs)] # Копируем сет перед итерацией
-            future = asyncio.run_coroutine_threadsafe(asyncio.gather(*close_tasks, return_exceptions=True), background_loop)
+            future = asyncio.run_coroutine_threadsafe(asyncio.gather(*close_tasks, return_exceptions=True), background_loop) # type: ignore
             try:
                 future.result(timeout=5) # Даем время на закрытие
                 logger.info(f"Закрыто {len(close_tasks)} PeerConnection(s).")

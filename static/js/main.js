@@ -471,8 +471,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const ptzControlConfig = [
         { id: 'ptzUp',    key: 'arrowup',    action: () => startCameraPtzMovement(0, IS_INVERT_UPDOWN_PTZ_CONFIG ? -CAMERA_TILT_SPEED_CONFIG : CAMERA_TILT_SPEED_CONFIG, 0) },
         { id: 'ptzDown',  key: 'arrowdown',  action: () => startCameraPtzMovement(0, IS_INVERT_UPDOWN_PTZ_CONFIG ? CAMERA_TILT_SPEED_CONFIG : -CAMERA_TILT_SPEED_CONFIG, 0) },
-        { id: 'ptzLeft',  key: 'arrowleft',  action: () => startCameraPtzMovement(-CAMERA_PAN_SPEED_CONFIG, 0, 0) },
-        { id: 'ptzRight', key: 'arrowright', action: () => startCameraPtzMovement(CAMERA_PAN_SPEED_CONFIG, 0, 0) },
+        { id: 'ptzLeft',  key: 'arrowleft',  action: () => startCameraPtzMovement(CAMERA_PAN_SPEED_CONFIG, 0, 0) },
+        { id: 'ptzRight', key: 'arrowright', action: () => startCameraPtzMovement(-CAMERA_PAN_SPEED_CONFIG, 0, 0) },
         { id: 'ptzZoomIn',key: 'z',          action: () => startCameraPtzMovement(0, 0, CAMERA_ZOOM_SPEED_CONFIG) },
         { id: 'ptzZoomOut',key: 'x',         action: () => startCameraPtzMovement(0, 0, -CAMERA_ZOOM_SPEED_CONFIG) }
     ];
