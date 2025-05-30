@@ -90,7 +90,7 @@ function updateCameraConfigValues() {
     RTSP_URL_CONFIG = rtspUrlInput.value;
     SELECTED_CAMERA_TYPE_NAME_CONFIG = cameraTypeSelect.value;
     IS_INVERT_UPDOWN_PTZ_CONFIG = invertUpDownCheckbox.checked;
-    // logger("Конфигурация камеры обновлена."); // Can be noisy if called often
+    logger("Конфигурация камеры обновлена.");
 }
 
 async function sendCameraPtzRequestToBackend(ptzAction, panSpeed = 0, tiltSpeed = 0, zoomSpeed = 0) {
@@ -144,7 +144,6 @@ function startCameraPtzMovement(x, y, z) {
     cameraPtzContinuousMoveCommand(x, y, z);
     ptzMoveTimeoutId = setTimeout(() => {
         if (isCurrentlyMovingPtz) {
-            // logger("Камера: Авто-остановка PTZ движения."); // Can be verbose
             cameraPtzStopCommand();
             isCurrentlyMovingPtz = false;
         }
@@ -161,7 +160,7 @@ function stopCameraPtzMovement() {
 
 // --- Функции для Управления Платформой ---
 
-// HUD-style notification (already provided by user, assumed to be this version)
+// HUD-style notification 
 function showPlatformNotification(message, type, duration = 3000) {
     if (!platformNotificationElem) return;
 
@@ -445,7 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onvifPasswordInput = document.getElementById('onvifPassword');
     cameraTypeSelect = document.getElementById('cameraType');
     invertUpDownCheckbox = document.getElementById('invertUpDown');
-    startStreamButton = document.getElementById('startStreamButton'); // Эта кнопка теперь будет для WebRTC
+    startStreamButton = document.getElementById('startStreamButton');
 
     if (!videoStreamImgElement || !webRtcVideoElement || !cameraIpInput || !rtspUrlInput || !onvifUserInput || !onvifPasswordInput || !cameraTypeSelect || !invertUpDownCheckbox || !startStreamButton) {
         logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для камеры и видео найдены!", "error");
@@ -458,12 +457,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Переназначаем startStreamButton для WebRTC
         startStreamButton.addEventListener('click', () => {
             logger("Кнопка 'Запустить видео' нажата, инициируем WebRTC стрим.");
-            updateCameraConfigValues(); // Убедимся, что RTSP_URL_CONFIG актуален, если сервер его ждет
-            
-            // Если вы хотите использовать MJPEG как fallback или для отладки,
-            // можно оставить старую логику здесь под условием или для другой кнопки.
-            // videoStreamImgElement.src = `${BACKEND_BASE_URL}/api/video-stream?rtsp=${encodeURIComponent(RTSP_URL_CONFIG)}`;
-            
+            updateCameraConfigValues(); 
             startWebRtcStream();
         });
     }
@@ -591,19 +585,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.addEventListener('keyup', (event) => {
         const key = event.key.toLowerCase();
-        // let handled = false; // Not strictly needed for keyup if not preventing default
-
         if (platformControllerInstance && platformKeys.includes(key)) {
             platformControllerInstance.releaseKey(key);
-            // handled = true;
         }
-        
         if (cameraArrowKeys.includes(key) || cameraZoomKeys.includes(key)) {
              if (isCurrentlyMovingPtz) {
                 const control = ptzControlConfig.find(c => c.key === key);
                 if (control) { 
                     stopCameraPtzMovement();
-                    // handled = true;
                 }
             }
         }

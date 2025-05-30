@@ -4,7 +4,6 @@ import hashlib
 from random import random
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS # type: ignore
-import cv2 # type: ignore
 import asyncio
 import uuid
 import threading
@@ -340,9 +339,6 @@ def ptz_control():
     else:
         return jsonify({"status": "error", "message": "Неизвестное действие"}), 400
 
-
-# Код для MJPEG стриминга (можно убрать или оставить для сравнения)
-# @app.route('/api/video-stream') ...
 
 def cleanup_webrtc_resources():
     logger.info("Закрытие WebRTC ресурсов...")
