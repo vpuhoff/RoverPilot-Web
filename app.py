@@ -11,6 +11,8 @@ from aiortc.contrib.media import MediaPlayer, MediaRelay # type: ignore
 # --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+def logger_error(msg): print(f"ERROR: {msg}")
+def logger_info(msg): print(f"INFO: {msg}")
 
 # --- Глобальные переменные ---
 app = Flask(__name__)
@@ -120,6 +122,86 @@ async def offer_async_logic(params):
 
     return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
+def send_ptz_request(host, camera_type_str, user, password, service_content_builder, ptz_action_name, x=0, y=0, z=0):
+    profile_token, service_path_suffix = get_camera_onvif_params(camera_type_str)
+    if not profile_token:
+        msg = f"Не удалось получить параметры для {camera_type_str}"
+        logger_error(msg)
+        return jsonify({"status": "error", "message": msg}), 500
+
+    service_url = f"http://{host}{service_path_suffix}"
+    xml_payload = ""
+    headers = {}
+    
+    service_content = service_content_builder(profile_token, x, y, z)
+
+    if camera_type_str.upper() in [CameraType.YOOSEE.name, CameraType.Y05.name]:
+        xml_payload = build_onvif_envelope(user, password, service_content, camera_type_str)
+        onvif_action = "Stop" if ptz_action_name == "Stop" else "ContinuousMove"
+        action_url = f"http://www.onvif.org/ver20/ptz/wsdl/{onvif_action}"
+        headers = {'Content-Type': f'application/soap+xml;charset=UTF8;action="{action_url}"'}
+    
+    elif camera_type_str.upper() == CameraType.YCC365.name:
+        xml_payload = f"""<?xml version="1.0" encoding="utf-8"?>
+                        <soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+                            <soap:Body>
+                            {service_content}
+                            </soap:Body>
+                        </soap:Envelope>"""
+        headers = YCC365_DEFAULT_HEADERS
+
+    if xml_payload:
+        try:
+            logger_info(f"{ptz_action_name} Request to {service_url} for {camera_type_str}")
+            r = requests.post(service_url, data=xml_payload.encode('utf-8'), headers=headers, timeout=3)
+            logger_info(f"{ptz_action_name} Response: {r.status_code}")
+            
+            if r.status_code not in [200, 202, 204]:
+                logger_error(f"PTZ {ptz_action_name} Ошибка: {r.status_code} - {r.text}")
+                return jsonify({"status": "error", "message": f"PTZ {ptz_action_name} Ошибка: {r.status_code}", "details": r.text}), r.status_code
+            return jsonify({"status": "success", "message": f"PTZ {ptz_action_name} выполнен: {r.status_code}", "response_text": r.text}), r.status_code
+        except requests.exceptions.RequestException as e:
+            logger_error(f"PTZ {ptz_action_name} Исключение: {e}")
+            return jsonify({"status": "error", "message": f"PTZ {ptz_action_name} Исключение: {str(e)}"}), 500
+    else:
+        return jsonify({"status": "error", "message": "Не удалось сформировать XML payload"}), 500
+
+
+def build_continuous_move_content(profile_token, x_speed, y_speed, z_speed):
+    if SELECTED_CAMERA_TYPE_NAME_GLOBAL.upper() in [CameraType.YOOSEE.name, CameraType.Y05.name]:
+        return f"""<ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl">
+                    <ProfileToken>{profile_token}</ProfileToken>
+                    <Velocity>
+                        <PanTilt x="{x_speed}" y="{y_speed}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace" xmlns="http://www.onvif.org/ver10/schema"/>
+                        <Zoom x="{z_speed}" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace" xmlns="http://www.onvif.org/ver10/schema"/>
+                    </Velocity>
+                </ContinuousMove>"""
+    elif SELECTED_CAMERA_TYPE_NAME_GLOBAL.upper() == CameraType.YCC365.name:
+        return f"""<tptz:ContinuousMove>
+                    <tptz:ProfileToken>{profile_token}</tptz:ProfileToken>
+                    <tptz:Velocity>
+                        <tt:PanTilt x="{x_speed}" y="{y_speed}"/>
+                        <tt:Zoom x="{z_speed}"/>
+                    </tptz:Velocity>
+                </tptz:ContinuousMove>"""
+    return ""
+
+
+def build_stop_content(profile_token, x, y, z):
+    if SELECTED_CAMERA_TYPE_NAME_GLOBAL.upper() in [CameraType.YOOSEE.name, CameraType.Y05.name]:
+        return f"""<Stop xmlns="http://www.onvif.org/ver20/ptz/wsdl">
+                    <ProfileToken>{profile_token}</ProfileToken>
+                    <PanTilt>true</PanTilt>
+                    <Zoom>true</Zoom>
+                </Stop>"""
+    elif SELECTED_CAMERA_TYPE_NAME_GLOBAL.upper() == CameraType.YCC365.name:
+         return f"""<tptz:Stop>
+                    <tptz:ProfileToken>{profile_token}</tptz:ProfileToken>
+                    <tptz:PanTilt>true</tptz:PanTilt>
+                    <tptz:Zoom>true</tptz:Zoom>
+                </tptz:Stop>"""
+    return ""
+
 # --- Flask эндпоинты ---
 @app.route('/')
 def index():
@@ -148,7 +230,36 @@ def offer_route():
         return jsonify({"error": str(e)}), 500
 
 # Код для управления камерой (ONVIF PTZ) остается здесь
-# @app.route('/api/ptz', methods=['POST']) ...
+@app.route('/api/ptz', methods=['POST'])
+def ptz_control():
+    global SELECTED_CAMERA_TYPE_NAME_GLOBAL
+    data = request.json
+    logger_info(f"Получен PTZ запрос: {data}")
+
+    camera_ip = data.get('camera_ip')
+    onvif_user = data.get('onvif_user')
+    onvif_password = data.get('onvif_password')
+    camera_type = data.get('camera_type')
+    action = data.get('action') 
+
+    if not all([camera_ip, onvif_user, onvif_password, camera_type, action]):
+        return jsonify({"status": "error", "message": "Отсутствуют обязательные параметры"}), 400
+    
+    SELECTED_CAMERA_TYPE_NAME_GLOBAL = camera_type 
+
+    if action == 'move':
+        pan = data.get('pan', 0.0)
+        tilt = data.get('tilt', 0.0)
+        zoom = data.get('zoom', 0.0)
+        return send_ptz_request(camera_ip, camera_type, onvif_user, onvif_password, 
+                                build_continuous_move_content, "ContinuousMove",
+                                x=pan, y=tilt, z=zoom)
+    elif action == 'stop':
+        return send_ptz_request(camera_ip, camera_type, onvif_user, onvif_password,
+                                build_stop_content, "Stop")
+    else:
+        return jsonify({"status": "error", "message": "Неизвестное действие"}), 400
+
 
 # Код для MJPEG стриминга (можно убрать или оставить для сравнения)
 # @app.route('/api/video-stream') ...
