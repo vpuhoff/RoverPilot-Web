@@ -3,190 +3,392 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Управление PTZ камерой и платформой</title>
+    <title>Drone Control Interface</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
-        .ptz-button, .platform-button {
-            transition: all 0.1s ease-in-out;
-            user-select: none; /* Предотвратить выделение текста на кнопках */
+        #loaderContainer.hidden {
+            display: none !important;
         }
-        .ptz-button:active, .platform-button:active {
-            transform: scale(0.95);
-            box-shadow: inset 2px 2px 5px rgba(0,0,0,0.2);
+        #config-panel-container.hidden {
+            display: none !important;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0a0f18; /* Dark background for when video isn't loaded */
+            color: #e0e0e0;
+            overflow: hidden; /* Prevent scrollbars */
+            user-select: none;
+        }
+
+        #video-background-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0; /* Behind everything else */
+            background-color: #000; /* Fallback if image fails */
+        }
+
+        #videoStream {
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Cover the area, might crop */
+        }
+
+        .hud-overlay-container {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            padding: 1rem; /* Overall padding for the HUD elements */
+            pointer-events: none; /* Allow clicks to pass through empty areas */
+        }
+
+        .hud-panel {
+            background-color: rgba(10, 15, 24, 0.6); /* Dark semi-transparent */
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(56, 189, 248, 0.2); /* Light blue border */
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.1);
+            pointer-events: auto; /* Panels themselves are interactive */
+        }
+        
+        .hud-panel-tight {
+            background-color: rgba(10, 15, 24, 0.6);
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            border-radius: 0.375rem; /* Slightly smaller radius */
+            padding: 0.5rem 0.75rem; /* Tighter padding */
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.1);
+            pointer-events: auto;
+        }
+
+        .hud-text-primary { color: #c7d2fe; /* Light indigo */ }
+        .hud-text-secondary { color: #93c5fd; /* Light blue */ }
+        .hud-text-accent { color: #67e8f9; /* Cyan */ }
+        .hud-text-warning { color: #facc15; /* Yellow */ }
+        .hud-text-error { color: #f87171; /* Red */ }
+        .hud-text-success { color: #4ade80; /* Green */}
+
+        .hud-title {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: #67e8f9; /* Cyan */
+            padding-bottom: 0.3rem;
+            border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+            margin-bottom: 0.75rem;
+        }
+
+        .hud-button {
+            background-color: rgba(56, 189, 248, 0.3); /* Semi-transparent light blue */
+            border: 1px solid rgba(56, 189, 248, 0.5);
+            color: #e0f2fe; /* Very light blue text */
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            transition: all 0.2s ease-in-out;
+            font-size: 0.875rem;
+        }
+        .hud-button:hover {
+            background-color: rgba(56, 189, 248, 0.5);
+            border-color: rgba(56, 189, 248, 0.8);
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+        }
+        .hud-button:active {
+            transform: scale(0.97);
+        }
+        .hud-button-critical {
+            background-color: rgba(239, 68, 68, 0.3); /* Red */
+            border-color: rgba(239, 68, 68, 0.5);
+        }
+        .hud-button-critical:hover {
+            background-color: rgba(239, 68, 68, 0.5);
+            border-color: rgba(239, 68, 68, 0.8);
+        }
+
+        /* Status Indicator Styles */
+        .status-indicator {
+            padding: 0.25rem 0.75rem;
+            border-radius: 0.25rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: 'Roboto Mono', monospace;
+            border: 1px solid transparent;
+        }
+        .status-indicator.connected { background-color: rgba(74, 222, 128, 0.3); color: #dcfce7; border-color: #22c55e;}
+        .status-indicator.disconnected { background-color: rgba(248, 113, 113, 0.3); color: #fee2e2; border-color: #ef4444;}
+        .status-indicator.connecting { background-color: rgba(250, 204, 21, 0.3); color: #fef9c3; border-color: #f59e0b;}
+
+
+        /* Throttle and Steering Bars */
+        .control-bar-container {
+            width: 100%;
+            height: 18px;
+            background-color: rgba(0,0,0,0.3);
+            border-radius: 3px;
+            position: relative;
+            border: 1px solid rgba(100,116,139,0.5); /* slate-500/50 */
+        }
+        .control-bar {
+            height: 100%;
+            position: absolute;
+            border-radius: 2px;
+            transition: width 0.1s linear, left 0.1s linear, background-color 0.1s linear;
+        }
+        .control-bar-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            font-size: 0.7rem;
+            line-height: 18px; /* Same as bar height */
+            color: #e0e0e0;
+            font-weight: 500;
+            font-family: 'Roboto Mono', monospace;
+            text-shadow: 1px 1px 1px rgba(0,0,0,0.7);
+        }
+        #platformThrottleBar { background-color: #22c55e; /* Green-500 */ }
+        #platformSteeringBar { background-color: #38bdf8; /* Sky-500 */ }
+        .control-bar-zero-marker {
+            position: absolute;
+            left: 50%;
+            top: 0;
+            height: 100%;
+            width: 1px;
+            background-color: rgba(100,116,139,0.7); /* slate-500/70 */
+            transform: translateX(-50%);
+        }
+        .control-bar-label {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.7rem;
+            color: #94a3b8; /* slate-400 */
+            text-transform: uppercase;
+            margin-bottom: 0.25rem;
+        }
+
+        /* Configuration Panel */
+        #config-panel-container {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background-color: rgba(0,0,0,0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+        #config-panel-content {
+            width: 100%;
+            max-width: 600px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        #config-panel-content input, #config-panel-content select {
+            background-color: rgba(30, 41, 59, 0.8); /* slate-800/80 */
+            border: 1px solid #475569; /* slate-600 */
+            color: #e2e8f0; /* slate-200 */
+            border-radius: 0.25rem;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+        }
+        #config-panel-content label {
+            color: #94a3b8; /* slate-400 */
+            font-size: 0.8rem;
+            margin-bottom: 0.25rem;
+            display: block;
+        }
+
+        /* Log Output */
+        #logOutput {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.75rem;
+            color: #cbd5e1; /* slate-300 */
+            background-color: rgba(0,0,0,0.2);
+            border-radius: 0.25rem;
+            padding: 0.5rem;
+            height: 100%; /* Fill parent */
+            overflow-y: auto;
+        }
+        #logOutput p { margin-bottom: 0.25rem; }
+        #logOutput p.error { color: #f87171; } /* Red-400 */
+        #logOutput p.success { color: #4ade80; } /* Green-400 */
+
+        /* Loader */
+        #loaderContainer {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            background-color: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         .loader {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
+            border: 4px solid rgba(200,200,200,0.2);
+            border-top: 4px solid #38bdf8; /* sky-500 */
             border-radius: 50%;
-            width: 30px;
-            height: 30px;
+            width: 50px;
+            height: 50px;
             animation: spin 1s linear infinite;
-            margin: 10px auto;
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .control-section {
-            background-color: #f9fafb; /* Slightly different background for sections */
-            padding: 1.5rem;
-            border-radius: 0.5rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-            margin-bottom: 1.5rem;
-        }
-        .bar-container {
-            width: 100%;
-            height: 20px;
-            background-color: #e5e7eb;
-            border-radius: 0.375rem;
-            overflow: hidden;
-            position: relative;
-            margin-bottom: 0.5rem;
-        }
-        .bar {
-            height: 100%;
-            background-color: #3b82f6;
-            position: absolute;
-            left: 50%;
-            transform: translateX(-50%);
-            transition: width 0.1s linear, left 0.1s linear, background-color 0.1s linear;
-        }
-        .bar-text {
-            position: absolute;
-            width: 100%;
-            text-align: center;
-            font-size: 0.75rem;
-            line-height: 20px; /* Same as bar height */
-            color: #1f2937;
-            font-weight: bold;
-        }
-        .notification-area {
-            padding: 0.5rem;
-            margin-top: 0.5rem;
-            border-radius: 0.375rem;
-            text-align: center;
-            font-size: 0.875rem;
-            display: none; /* Hidden by default */
-        }
-        .notification-area.success { background-color: #d1fae5; color: #065f46; }
-        .notification-area.error { background-color: #fee2e2; color: #991b1b; }
-        .status-indicator {
-            padding: 0.25rem 0.5rem;
-            border-radius: 0.25rem;
-            font-size: 0.8em;
-            font-weight: bold;
-        }
-        .status-indicator.connected { background-color: #d1fae5; color: #065f46; }
-        .status-indicator.disconnected { background-color: #fee2e2; color: #991b1b; }
-        .status-indicator.connecting { background-color: #fef3c7; color: #92400e; }
+
     </style>
 </head>
-<body class="bg-gray-100 text-gray-800 flex flex-col items-center min-h-screen p-4">
+<body>
+    <div id="video-background-container">
+        <img id="videoStream" src="https://placehold.co/1920x1080/0a0f18/1e293b?text=Video+Feed+Loading..." alt="Видеопоток с камеры">
+    </div>
 
-    <div class="bg-white p-6 rounded-lg shadow-xl w-full max-w-3xl">
-        <h1 class="text-3xl font-bold text-center mb-8 text-indigo-600">Центр Управления</h1>
+    <div class="hud-overlay-container">
+        <header class="hud-panel flex justify-between items-center mb-3">
+            <h1 class="text-lg font-bold text-sky-400 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6 mr-2 text-sky-500">
+                    <path d="M12.378 1.602a.75.75 0 00-.756 0L3.004 6.022a.75.75 0 00-.504.69v7.576a.75.75 0 00.504.69l8.618 4.42a.75.75 0 00.756 0l8.618-4.42a.75.75 0 00.504-.69V6.712a.75.75 0 00-.504-.69L12.378 1.602zM12 15.75a3.75 3.75 0 100-7.5 3.75 3.75 0 000 7.5z" />
+                    <path fill-rule="evenodd" d="M21.721 6.343A.75.75 0 0021 6.712v7.576c0 .782-.895 1.304-1.59 1.013l-2.685-1.105A3.735 3.735 0 0017.25 15V9a3.735 3.735 0 00-.525-1.885l-2.685-1.105a.75.75 0 00-1.08.29l-.005.01-.01.016a.75.75 0 00.29 1.081L15.75 8.62v6.117a2.234 2.234 0 01.015.232l2.686 1.105c.4.164.885-.06.885-.508V6.712a.75.75 0 00-.028-.198.75.75 0 00-.702-.17zM2.279 6.343a.75.75 0 01.702-.171L3 6.712v7.576c0 .782.895 1.304 1.59 1.013l2.686-1.105A3.735 3.735 0 016.75 15V9a3.735 3.735 0 01.525-1.885l2.685-1.105a.75.75 0 011.08.29l.005.01.01.016a.75.75 0 01-.29 1.081L8.25 8.62v6.117a2.234 2.234 0 00-.015.232L5.55 16.073c-.4.164-.885-.06-.885-.508V6.712a.75.75 0 01.028-.198.75.75 0 01.702-.17z" clip-rule="evenodd" />
+                </svg>
+                ROVER CTRL
+            </h1>
+            <div class="flex items-center space-x-3">
+                <span id="platformConnectionStatus" class="status-indicator disconnected">OFFLINE</span>
+                <button id="toggleConfigButton" class="hud-button text-xs !py-1 !px-2" title="Открыть настройки">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M11.078 2.25c-.217-.065-.439-.1-.678-.1H9.6c-.239 0-.46.035-.678.1C6.682 2.625 4.885 4.524 4.885 7.05v.513c0 .845.362 1.584.952 2.14l.736.696A.75.75 0 017 10.079V11.5a.75.75 0 01-.75.75H6.16a11.228 11.228 0 00-1.67 3.065.75.75 0 01-1.34.476C1.983 12.86 1.017 9.89 1.017 7.563v-.513C1.017 3.832 3.534 1.005 7.05 1.005h3.9c3.516 0 6.033 2.827 6.033 6.045v.513c0 2.327-.966 5.297-2.137 8.339a.75.75 0 01-1.34-.477 11.225 11.225 0 00-1.67-3.065H14.5a.75.75 0 01-.75-.75v-1.421a.75.75 0 01.438-.686l.736-.696c.59-.556.952-1.295.952-2.14v-.513c0-2.526-1.797-4.425-4.015-4.8zM8.25 10.5V12h3.5V10.5a.75.75 0 01.75-.75h.5a.75.75 0 01.75.75V12h.038a2.5 2.5 0 012.462 2.25H4.75A2.5 2.5 0 017.212 12H12V9.72a.75.75 0 01-.438-.685l-.736-.696a2.001 2.001 0 00-2.828-.002L7.264 9.03a.75.75 0 01-.438.686V10.5z" clip-rule="evenodd" /></svg>
+                </button>
+                 <button id="startStreamButton" class="hud-button text-xs !py-1 !px-2" title="Запустить/обновить видеопоток">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" /><path d="M3 5.25a2.75 2.75 0 012.75-2.75h8.5A2.75 2.75 0 0117 5.25v9.5A2.75 2.75 0 0114.25 17.5h-8.5A2.75 2.75 0 013 14.75v-9.5zm2.75-.25c-.138 0-.25.112-.25.25v9.5c0 .138.112.25.25.25h8.5c.138 0 .25-.112.25-.25v-9.5c0-.138-.112-.25-.25-.25h-8.5z" /></svg>
+                </button>
+            </div>
+        </header>
 
-        <div class="control-section">
-            <h2 class="text-xl font-semibold text-center mb-4 text-blue-700">Управление Камерой (ONVIF)</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div class="flex-grow grid grid-cols-12 gap-3 min-h-0">
+            <aside class="col-span-2 flex flex-col space-y-3"> <!- Вот изменение ->
+                <div id="camera-controls-panel" class="hud-panel flex-shrink-0">
+                    <h3 class="hud-title">Камера PTZ</h3>
+                    <div class="grid grid-cols-3 gap-1.5 justify-items-center mb-1.5">
+                        <div></div> <button id="ptzUp" class="hud-button w-full aspect-square flex items-center justify-center text-lg">&#8593;</button> <div></div>
+                        <button id="ptzLeft" class="hud-button w-full aspect-square flex items-center justify-center text-lg">&#8592;</button>
+                        <button id="ptzStop" class="hud-button hud-button-critical w-full aspect-square flex items-center justify-center text-xs">STOP</button>
+                        <button id="ptzRight" class="hud-button w-full aspect-square flex items-center justify-center text-lg">&#8594;</button>
+                        <div></div> <button id="ptzDown" class="hud-button w-full aspect-square flex items-center justify-center text-lg">&#8595;</button> <div></div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-1.5">
+                        <button id="ptzZoomIn" class="hud-button w-full">Z+</button>
+                        <button id="ptzZoomOut" class="hud-button w-full">Z-</button>
+                    </div>
+                </div>
+                <div id="platform-telemetry-panel" class="hud-panel flex-1 min-h-0 flex flex-col">
+                    <h3 class="hud-title">Телеметрия</h3>
+                    <div class="space-y-1 text-xs font-mono flex-grow overflow-y-auto pr-1">
+                        <p>ESP L: <span id="platformActualLeft" class="font-semibold hud-text-accent">N/A</span></p>
+                        <p>ESP R: <span id="platformActualRight" class="font-semibold hud-text-accent">N/A</span></p>
+                        <p>Клавиши: <span id="platformKeysPressed" class="font-semibold hud-text-secondary">None</span></p>
+                        <div id="platformNotification" class="mt-1 text-xs"></div>
+                    </div>
+                </div>
+            </aside>
+        
+            <div class="col-span-8">  
+                </div>
+        
+            <aside class="col-span-3 flex flex-col space-y-3">
+                    <div id="log-panel" class="hud-panel flex-1 min-h-0 flex flex-col">
+                        <h3 class="hud-title">Системный Лог</h3>
+                        <div id="logOutput" class="flex-grow min-h-0">
+                            <p class="text-gray-500 text-xs italic">Логи будут здесь...</p>
+                        </div>
+                    </div>
+            </aside>
+
+
+            
+        </div>
+
+        <footer class="hud-panel mt-3">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center">
+                <div class="md:col-span-1">
+                    <button id="platformHandbrake" class="hud-button w-full text-sm">РУЧНИК (Пробел)</button>
+                </div>
+                <div class="md:col-span-2 grid grid-cols-2 gap-3">
+                    <div>
+                        <p class="control-bar-label text-center">Газ (W/S): <span id="platformThrottleValue" class="font-bold hud-text-accent">0%</span></p>
+                        <div class="control-bar-container">
+                            <div class="control-bar-zero-marker"></div>
+                            <div id="platformThrottleBar" class="control-bar"></div>
+                            <div id="platformThrottleBarText" class="control-bar-text">0%</div>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="control-bar-label text-center">Руль (A/D): <span id="platformSteeringValue" class="font-bold hud-text-accent">0</span></p>
+                        <div class="control-bar-container">
+                            <div class="control-bar-zero-marker"></div>
+                            <div id="platformSteeringBar" class="control-bar"></div>
+                            <div id="platformSteeringBarText" class="control-bar-text">0</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <div id="config-panel-container" class="hidden">
+        <div id="config-panel-content" class="hud-panel !bg-slate-800/95 border-sky-500/50 w-full max-w-md">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-lg font-semibold text-sky-300">Настройки Системы</h2>
+                <button id="closeConfigButton" class="text-gray-400 hover:text-sky-300 text-2xl leading-none">&times;</button>
+            </div>
+            <div class="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
                 <div>
-                    <label for="cameraIp" class="block text-sm font-medium text-gray-700">IP Камеры (ONVIF Host):</label>
-                    <input type="text" id="cameraIp" value="192.168.0.167" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    <label for="cameraIp">IP Камеры (ONVIF Host):</label>
+                    <input type="text" id="cameraIp" value="192.168.0.167">
                 </div>
                 <div>
-                    <label for="rtspUrl" class="block text-sm font-medium text-gray-700">RTSP URL (для видео):</label>
-                    <input type="text" id="rtspUrl" value="rtsp://admin:123456@192.168.0.167:554" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    <label for="rtspUrl">RTSP URL (для видео):</label>
+                    <input type="text" id="rtspUrl" value="rtsp://admin:123456@192.168.0.167:554">
                 </div>
                 <div>
-                    <label for="onvifUser" class="block text-sm font-medium text-gray-700">ONVIF Пользователь:</label>
-                    <input type="text" id="onvifUser" value="admin" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    <label for="onvifUser">ONVIF Пользователь:</label>
+                    <input type="text" id="onvifUser" value="admin">
                 </div>
                 <div>
-                    <label for="onvifPassword" class="block text-sm font-medium text-gray-700">ONVIF Пароль:</label>
-                    <input type="password" id="onvifPassword" value="123456" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    <label for="onvifPassword">ONVIF Пароль:</label>
+                    <input type="password" id="onvifPassword" value="123456">
                 </div>
                 <div>
-                    <label for="cameraType" class="block text-sm font-medium text-gray-700">Тип Камеры:</label>
-                    <select id="cameraType" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                    <label for="cameraType">Тип Камеры:</label>
+                    <select id="cameraType">
                         <option value="YCC365" selected>YCC365</option>
                         <option value="YOOSEE">YOOSEE</option>
                         <option value="Y05">Y05</option>
                     </select>
                 </div>
-                 <div>
-                    <label for="invertUpDown" class="flex items-center mt-7">
-                        <input type="checkbox" id="invertUpDown" class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
-                        <span class="ml-2 text-sm text-gray-700">Инверт. Tilt (Камера)</span>
+                <div>
+                    <label for="invertUpDown" class="flex items-center">
+                        <input type="checkbox" id="invertUpDown" class="mr-2 h-4 w-4 text-sky-500 bg-slate-700 border-slate-600 focus:ring-sky-600">
+                        Инвертировать Tilt (Камера)
                     </label>
                 </div>
-            </div>
-
-            <div class="mb-4 border-2 border-blue-300 rounded-lg overflow-hidden aspect-video bg-black flex items-center justify-center">
-                <img id="videoStream" src="https://placehold.co/640x360/000000/FFFFFF?text=Видеопоток+с+камеры%0A(нажмите+%22Запустить+видео%22)" alt="Видеопоток с камеры" class="w-full h-full object-contain">
-            </div>
-            <button id="startStreamButton" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-md mb-4">
-                Запустить/Обновить видео
-            </button>
-
-            <div class="grid grid-cols-3 gap-2 justify-items-center mb-2">
-                <div></div> <button id="ptzUp" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8593; (ArrowUp)</button> <div></div>
-                <button id="ptzLeft" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8592; (ArrowLeft)</button>
-                <button id="ptzStop" class="ptz-button bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-full w-24 h-24 flex items-center justify-center text-sm">СТОП</button>
-                <button id="ptzRight" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8594; (ArrowRight)</button>
-                <div></div> <button id="ptzDown" class="ptz-button bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-md w-32">&#8595; (ArrowDown)</button> <div></div>
-            </div>
-            <div class="grid grid-cols-2 gap-2 justify-items-center">
-                <button id="ptzZoomIn" class="ptz-button bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-md w-full">Zoom + (Z)</button>
-                <button id="ptzZoomOut" class="ptz-button bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-3 px-6 rounded-md w-full">Zoom - (X)</button>
-            </div>
-        </div>
-
-        <div class="control-section">
-            <h2 class="text-xl font-semibold text-center mb-4 text-green-700">Управление Платформой</h2>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 items-end">
-                 <div>
-                    <label for="platformIp" class="block text-sm font-medium text-gray-700">IP Платформы (ESP32):</label>
-                    <input type="text" id="platformIp" value="192.168.0.155" class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-green-500 focus:border-green-500 sm:text-sm">
+                <hr class="border-slate-600 my-3">
+                <div>
+                    <label for="platformIp">IP Платформы (ESP32 WebSocket):</label>
+                    <input type="text" id="platformIp" value="192.168.0.155">
                 </div>
-                 <div class="flex flex-col items-start md:items-end">
-                    <p class="text-sm text-gray-600 mb-1">Статус: <span id="platformConnectionStatus" class="status-indicator disconnected">Отключено</span></p>
-                    <button id="platformHandbrake" class="platform-button w-full md:w-auto bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-md">Handbrake (Пробел)</button>
-                </div>
-            </div>
-
-            <div class="mb-2">
-                <p class="text-sm font-medium text-gray-700 text-center">Газ (W/S): <span id="platformThrottleValue" class="font-bold">0%</span></p>
-                <div class="bar-container">
-                    <div id="platformThrottleBar" class="bar"></div>
-                    <div id="platformThrottleBarText" class="bar-text">0%</div>
-                </div>
-            </div>
-            <div class="mb-4">
-                <p class="text-sm font-medium text-gray-700 text-center">Руль (A/D): <span id="platformSteeringValue" class="font-bold">0</span></p>
-                <div class="bar-container">
-                    <div id="platformSteeringBar" class="bar bg-purple-600"></div>
-                     <div id="platformSteeringBarText" class="bar-text">0</div>
-                </div>
-            </div>
-             <div class="grid grid-cols-2 gap-4 text-center mb-2">
-                <div><p class="text-sm text-gray-600">ESP L: <span id="platformActualLeft" class="font-semibold">N/A</span></p></div>
-                <div><p class="text-sm text-gray-600">ESP R: <span id="platformActualRight" class="font-semibold">N/A</span></p></div>
-            </div>
-            <div class="text-center text-sm text-gray-500">Нажатые клавиши (платформа): <span id="platformKeysPressed" class="font-semibold">None</span></div>
-            <div id="platformNotification" class="notification-area">Уведомления платформы</div>
-        </div>
-        
-        <div id="loader" class="loader" style="display: none;"></div>
-        <div class="mt-6">
-            <h3 class="text-lg font-semibold mb-2 text-gray-700">Общие Логи:</h3>
-            <div id="logOutput" class="h-40 overflow-y-auto bg-gray-50 p-3 border border-gray-300 rounded-md text-sm">
-                Логи будут отображаться здесь...
             </div>
         </div>
     </div>
 
+    <div id="loaderContainer" class="hidden">
+        <div id="loader" class="loader"></div>
+    </div>
+
     <script src="/static/js/PlatformController.js"></script>
     <script src="/static/js/main.js"></script>
+    
 </body>
 </html>
