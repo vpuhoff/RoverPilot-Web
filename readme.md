@@ -1,7 +1,3 @@
-All right, you're looking for the fully updated README.md that reflects the project's current state, especially after integrating WebRTC for video streaming.
-
-Here's the complete, non-abbreviated version based on our discussions:
-
 # Web-Based Control Interface for PTZ Camera and Robotic Platform with WebRTC Video
 
 This project provides a web interface to:
