@@ -7,6 +7,8 @@ This project provides a web interface to:
 
 It consists of a Python Flask backend (for camera ONVIF interaction, WebRTC signaling, and acting as a WebRTC media gateway for the RTSP stream) and an HTML/JavaScript/CSS frontend (for the user interface and direct platform control). The interface is styled to resemble a Heads-Up Display (HUD) or drone control panel.
 
+![alt text](image.jpg)
+
 ## Features
 
 * **Integrated Web Interface:** Control both the camera and a robotic platform from a single web page with a modern HUD-style layout.
