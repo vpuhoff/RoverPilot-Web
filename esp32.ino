@@ -2,16 +2,19 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESP32Servo.h>
+#include <ArduinoJson.h> // <-- Используем ArduinoJson
 
-// ... (все ваши предыдущие определения SSID, пароля, пинов, калибровок серво остаются здесь) ...
+// WiFi учетные данные
 const char* ssid = "DarkNet 2G";
 const char* password = "Integral320";
 
+// Сервоприводы
 Servo teaserServoLeft;
 Servo teaserServoRight;
-int servoLeftPin = 6;
-int servoRightPin = 7;
+int servoLeftPin = 6;  // Внимание: проверьте пины 6 и 7 на вашей ESP32 плате,
+int servoRightPin = 7; // они могут быть заняты SPI flash. Если есть проблемы, выберите другие.
 
+// Калибровки серво (остаются без изменений)
 const int SERVO_PULSE_NEUTRAL = 1500;
 const int SERVO_PULSE_MAX_SPEED_CW = 1900;
 const int SERVO_PULSE_MAX_SPEED_CCW = 1100;
@@ -19,283 +22,86 @@ const int SERVO_MIN_PULSE_OFFSET_FROM_NEUTRAL = 25;
 const int ATTACH_PWM_MIN_US = 1000;
 const int ATTACH_PWM_MAX_US = 2000;
 
+// Веб-сервер и WebSocket сервер
 AsyncWebServer server(80);
-String lastCommand = "None";
-int currentLeftSpeed = 0;  // Это будут фактические значения, отправленные в setPlatformSpeed
-int currentRightSpeed = 0; // Это будут фактические значения, отправленные в setPlatformSpeed
+AsyncWebSocket ws("/ws"); // WebSocket сервер будет доступен по адресу /ws
 
-// HTML-код страницы (мы его сильно изменим на следующем шаге для JS)
+// Глобальные переменные состояния
+String lastCommand = "None";
+int currentLeftSpeed = 0;
+int currentRightSpeed = 0;
+
+// HTML-код страницы (остается как есть, т.к. JS будет изменен отдельно)
 const char index_html[] PROGMEM = R"rawliteral(
+// ... (ваш существующий HTML код остается здесь без изменений) ...
+// Изменения в title и wsConnectionStatus для ясности
 <!DOCTYPE HTML><html>
 <head>
-  <title>ESP32 Advanced Control</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 10px; background-color: #f0f0f0; display: flex; flex-direction: column; align-items: center; user-select: none; }
-    .container { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; width: 90%; max-width: 450px; }
-    h1 { color: #333; margin-top: 0;}
-    .instructions { margin-bottom: 15px; font-size: 0.9em; color: #555; }
-    .status-box { border: 1px solid #ddd; padding: 10px; margin-top: 20px; border-radius: 5px; background-color: #e9e9e9; font-size: 0.9em;}
-    .status-box p { margin: 5px 0; }
-    .bar-container { width: 100%; background-color: #ddd; border-radius: 5px; margin-bottom: 10px; height: 20px; position: relative; }
-    .bar { height: 100%; background-color: #4CAF50; border-radius: 5px; text-align: center; line-height: 20px; color: white; font-size:0.8em; position: absolute; left: 50%; transform: translateX(-50%);}
-    .bar.steering { background-color: #2196F3; }
-    .bar.zero-marker { background-color: #888; width: 2px; height: 100%; position: absolute; left: 50%; top:0; transform: translateX(-50%);}
-    #throttleBarText, #steeringBarText { position: relative; z-index:1; }
-    .controls-display { margin-top:10px; font-size: 0.8em; }
-    #notification { margin-top: 15px; padding: 10px; border-radius: 5px; display: none; color: white; }
-    .success { background-color: #28a745; }
-    .error { background-color: #dc3545; }
-    .button-controls { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
-    .button-controls button { padding: 10px 15px; font-size: 1em; cursor: pointer; border-radius: 5px; border: none; background-color: #6c757d; color:white;}
-    .button-controls button:active {transform: scale(0.95);}
-  </style>
+ <title>ESP32 Advanced Control (WebSocket + ArduinoJson)</title>
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <style>
+   body { font-family: Arial, sans-serif; margin: 0; padding: 10px; background-color: #f0f0f0; display: flex; flex-direction: column; align-items: center; user-select: none; }
+   .container { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); text-align: center; width: 90%; max-width: 450px; }
+   h1 { color: #333; margin-top: 0;}
+   .instructions { margin-bottom: 15px; font-size: 0.9em; color: #555; }
+   .status-box { border: 1px solid #ddd; padding: 10px; margin-top: 20px; border-radius: 5px; background-color: #e9e9e9; font-size: 0.9em;}
+   .status-box p { margin: 5px 0; }
+   .bar-container { width: 100%; background-color: #ddd; border-radius: 5px; margin-bottom: 10px; height: 20px; position: relative; }
+   .bar { height: 100%; background-color: #4CAF50; border-radius: 5px; text-align: center; line-height: 20px; color: white; font-size:0.8em; position: absolute; left: 50%; transform: translateX(-50%);}
+   .bar.steering { background-color: #2196F3; }
+   .bar.zero-marker { background-color: #888; width: 2px; height: 100%; position: absolute; left: 50%; top:0; transform: translateX(-50%);}
+   #throttleBarText, #steeringBarText { position: relative; z-index:1; }
+   .controls-display { margin-top:10px; font-size: 0.8em; }
+   #notification { margin-top: 15px; padding: 10px; border-radius: 5px; display: none; color: white; }
+   .success { background-color: #28a745; }
+   .error { background-color: #dc3545; }
+   .button-controls { margin-top: 20px; display: flex; justify-content: center; gap: 10px; }
+   .button-controls button { padding: 10px 15px; font-size: 1em; cursor: pointer; border-radius: 5px; border: none; background-color: #6c757d; color:white;}
+   .button-controls button:active {transform: scale(0.95);}
+ </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Advanced Platform Control</h1>
-    <div class="instructions">
-      Use W (gas), S (brake/reverse), A (steer left), D (steer right). Q for handbrake.
-    </div>
+ <div class="container">
+   <h1>Advanced Platform Control (WebSocket + ArduinoJson)</h1>
+   <div class="instructions">
+     Use W (gas), S (brake/reverse), A (steer left), D (steer right). Q for handbrake.
+   </div>
 
-    <div>Throttle:</div>
-    <div class="bar-container">
-      <div class="bar zero-marker"></div>
-      <div class="bar" id="throttleBar" style="width: 0%; left: 50%;"><span id="throttleBarText">0%</span></div>
-    </div>
+   <div>Throttle:</div>
+   <div class="bar-container">
+     <div class="bar zero-marker"></div>
+     <div class="bar" id="throttleBar" style="width: 0%; left: 50%;"><span id="throttleBarText">0%</span></div>
+   </div>
 
-    <div>Steering:</div>
-    <div class="bar-container">
-      <div class="bar zero-marker"></div>
-      <div class="bar steering" id="steeringBar" style="width: 0%; left: 50%;"><span id="steeringBarText">0</span></div>
-    </div>
-    
-    <div class="controls-display">
-      Keys: <span id="keysDisplay"></span>
-    </div>
+   <div>Steering:</div>
+   <div class="bar-container">
+     <div class="bar zero-marker"></div>
+     <div class="bar steering" id="steeringBar" style="width: 0%; left: 50%;"><span id="steeringBarText">0</span></div>
+   </div>
+   
+   <div class="controls-display">
+     Keys: <span id="keysDisplay"></span>
+   </div>
 
-    <div class="button-controls">
-        <button id="btnHandbrake">Handbrake (Q)</button>
-    </div>
-    
-    <div id="notification"></div>
+   <div class="button-controls">
+       <button id="btnHandbrake">Handbrake (Q)</button>
+   </div>
+   
+   <div id="notification"></div>
 
-    <div class="status-box">
-      <p>ESP32 Status: Connected</p>
-      <p>Last Sent: L: <span id="sentLeft">0</span>% | R: <span id="sentRight">0</span>%</p>
-      <p>Raw Throttle: <span id="rawThrottle">0</span> | Raw Steering: <span id="rawSteering">0</span></p>
-    </div>
-  </div>
-  <script>
-    const MAX_THROTTLE = 100;
-    const MAX_STEERING = 100; // Steering will be mapped from -100 to 100
-
-    const THROTTLE_ACCELERATION = 5; // Increase per update if W pressed
-    const THROTTLE_DECELERATION_NATURAL = 2; // Decrease per update if W/S not pressed
-    const BRAKE_POWER = 6; // Decrease per update if S pressed (also for reverse)
-    
-    const STEERING_SPEED = 9; // Change per update if A/D pressed
-    const STEERING_RETURN_SPEED = 7; // Return to center per update
-
-    const UPDATE_INTERVAL = 50; // ms (20 updates per second)
-
-    let throttle = 0;
-    let steering = 0;
-    let handbrakeOn = false;
-
-    const keysPressed = {};
-
-    // UI Elements
-    const throttleBar = document.getElementById('throttleBar');
-    const throttleBarText = document.getElementById('throttleBarText');
-    const steeringBar = document.getElementById('steeringBar');
-    const steeringBarText = document.getElementById('steeringBarText');
-    const sentLeftEl = document.getElementById('sentLeft');
-    const sentRightEl = document.getElementById('sentRight');
-    const rawThrottleEl = document.getElementById('rawThrottle');
-    const rawSteeringEl = document.getElementById('rawSteering');
-    const keysDisplayEl = document.getElementById('keysDisplay');
-    const notificationDiv = document.getElementById('notification');
-    const btnHandbrake = document.getElementById('btnHandbrake');
-
-    document.addEventListener('keydown', (event) => {
-      keysPressed[event.key.toLowerCase()] = true;
-      updateKeysDisplay();
-      if (event.key.toLowerCase() === 'q') {
-        toggleHandbrake();
-        event.preventDefault(); // Prevent default browser action for Q
-      }
-      // Prevent default for arrow keys and space if they might scroll
-      if (['w', 's', 'a', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(event.key.toLowerCase())) {
-        event.preventDefault();
-      }
-    });
-
-    document.addEventListener('keyup', (event) => {
-      delete keysPressed[event.key.toLowerCase()];
-      updateKeysDisplay();
-    });
-    
-    btnHandbrake.addEventListener('click', toggleHandbrake);
-    btnHandbrake.addEventListener('touchstart', (e) => {e.preventDefault(); toggleHandbrake();}, {passive: false});
-
-
-    function toggleHandbrake() {
-        handbrakeOn = !handbrakeOn; // Toggle state
-        if (handbrakeOn) {
-            throttle = 0; // Immediately stop throttle
-            // Optionally, could also center steering or apply brake effect via motor commands
-            btnHandbrake.style.backgroundColor = '#dc3545'; // Red when on
-            btnHandbrake.textContent = "Handbrake ON (Q)";
-        } else {
-            btnHandbrake.style.backgroundColor = '#6c757d'; // Default grey
-            btnHandbrake.textContent = "Handbrake (Q)";
-        }
-    }
-
-
-    function updateControlLogic() {
-      // --- Steering ---
-      if (keysPressed['a'] || keysPressed['arrowleft']) {
-        steering -= STEERING_SPEED;
-      } else if (keysPressed['d'] || keysPressed['arrowright']) {
-        steering += STEERING_SPEED;
-      } else { // Return to center
-        if (steering > STEERING_RETURN_SPEED) steering -= STEERING_RETURN_SPEED;
-        else if (steering < -STEERING_RETURN_SPEED) steering += STEERING_RETURN_SPEED;
-        else steering = 0;
-      }
-      steering = Math.max(-MAX_STEERING, Math.min(MAX_STEERING, steering));
-
-      // --- Throttle & Handbrake ---
-      if (handbrakeOn) {
-        throttle = 0; 
-        // If Q is held, it will keep throttle at 0. If Q is a toggle, this frame's throttle is 0.
-      } else {
-        if (keysPressed['w'] || keysPressed['arrowup']) {
-          throttle += THROTTLE_ACCELERATION;
-        } else if (keysPressed['s'] || keysPressed['arrowdown']) {
-          throttle -= BRAKE_POWER;
-        } else { // Natural deceleration
-          if (throttle > THROTTLE_DECELERATION_NATURAL) throttle -= THROTTLE_DECELERATION_NATURAL;
-          else if (throttle < -THROTTLE_DECELERATION_NATURAL) throttle += THROTTLE_DECELERATION_NATURAL;
-          else throttle = 0;
-        }
-      }
-      throttle = Math.max(-MAX_THROTTLE, Math.min(MAX_THROTTLE, throttle));
-      
-      // If Q was just pressed to turn handbrake on, ensure throttle is 0 for this send cycle
-      if (keysPressed['q'] && !handbrakeOn) { // Logic if Q is momentary, not toggle
-          // This part is tricky if Q is a toggle. The toggleHandbrake function handles it.
-      }
-
-
-      // --- Mixing: Throttle & Steering to Motor Speeds ---
-      let baseSpeed = throttle;
-      let steeringAdjustment = steering;
-
-      // More arcade-like steering: reduce steering effect at very low throttle, full effect otherwise
-      // Or even scale steering by throttle: steeringAdjustment = steering * (Math.abs(throttle)/MAX_THROTTLE);
-      // For now, simple addition/subtraction:
-      
-      let conceptualLeftSpeed = baseSpeed + steeringAdjustment;
-      let conceptualRightSpeed = baseSpeed - steeringAdjustment;
-
-      // Normalize/Clamp motor speeds if they exceed MAX_THROTTLE due to steering
-      // This can be sophisticated (e.g. scale both down if one exceeds)
-      // Simple clamping:
-      conceptualLeftSpeed = Math.max(-MAX_THROTTLE, Math.min(MAX_THROTTLE, conceptualLeftSpeed));
-      conceptualRightSpeed = Math.max(-MAX_THROTTLE, Math.min(MAX_THROTTLE, conceptualRightSpeed));
-      
-      // --- Send to ESP32 ---
-      // We round to integers as ESP32 expects int
-      sendDriveCommand(Math.round(conceptualLeftSpeed), Math.round(conceptualRightSpeed));
-
-      // --- Update UI ---
-      updateUI(Math.round(conceptualLeftSpeed), Math.round(conceptualRightSpeed));
-    }
-
-    function sendDriveCommand(left, right) {
-      fetch(`/drive?left=${left}&right=${right}`)
-        .then(response => {
-          if (!response.ok) { 
-            // If server sends an error status, try to parse JSON for more info
-            return response.json().then(errData => {throw new Error(errData.message || 'Network response was not ok');});
-          }
-          return response.json();
-        })
-        .then(data => {
-          if (data.status === 'success') {
-            // Optionally show success notification or use data from response
-            // showNotification(`Sent: L ${data.actual_motor_L}, R ${data.actual_motor_R}`, 'success');
-            sentLeftEl.textContent = data.actual_motor_L; // Display actual values sent to motor
-            sentRightEl.textContent = data.actual_motor_R;
-          } else {
-            showNotification(data.message || 'Command failed', 'error');
-          }
-        })
-        .catch(error => {
-          console.error('Error sending drive command:', error);
-          showNotification(`Error: ${error.message}`, 'error');
-          sentLeftEl.textContent = "Err";
-          sentRightEl.textContent = "Err";
-        });
-    }
-
-    function updateUI(finalLeft, finalRight) {
-      // Throttle bar
-      let throttlePercent = (throttle / MAX_THROTTLE) * 50; // Max 50% width for positive or negative
-      throttleBar.style.width = Math.abs(throttlePercent * 2) + '%';
-      if (throttle >= 0) {
-        throttleBar.style.left = '50%';
-        throttleBar.style.transform = 'translateX(0%)';
-        throttleBar.style.backgroundColor = '#4CAF50'; // Green for forward
-      } else {
-        throttleBar.style.left = (50 - Math.abs(throttlePercent * 2)) + '%';
-        throttleBar.style.transform = 'translateX(0%)';
-        throttleBar.style.backgroundColor = '#f44336'; // Red for reverse
-      }
-      throttleBarText.textContent = `${Math.round(throttle)}%`;
-
-      // Steering bar
-      let steeringPercent = (steering / MAX_STEERING) * 50; // Max 50% width for left or right
-      steeringBar.style.width = Math.abs(steeringPercent * 2) + '%';
-       if (steering >= 0) { // Right
-        steeringBar.style.left = '50%';
-        steeringBar.style.transform = 'translateX(0%)';
-      } else { // Left
-        steeringBar.style.left = (50 - Math.abs(steeringPercent * 2)) + '%';
-        steeringBar.style.transform = 'translateX(0%)';
-      }
-      steeringBarText.textContent = `${Math.round(steering)}`;
-      
-      rawThrottleEl.textContent = Math.round(throttle);
-      rawSteeringEl.textContent = Math.round(steering);
-    }
-    
-    function updateKeysDisplay() {
-        keysDisplayEl.textContent = Object.keys(keysPressed).join(', ') || 'None';
-    }
-
-    function showNotification(message, type) {
-        notificationDiv.textContent = message;
-        notificationDiv.className = type;
-        notificationDiv.style.display = 'block';
-        clearTimeout(notificationDiv.timer);
-        notificationDiv.timer = setTimeout(() => {
-            notificationDiv.style.display = 'none';
-        }, 2500);
-    }
-
-    // Start the control loop
-    setInterval(updateControlLogic, UPDATE_INTERVAL);
-    updateKeysDisplay(); // Initial display
-  </script>
+   <div class="status-box">
+     <p>ESP32 Status: <span id="wsConnectionStatus">Disconnected</span> (ArduinoJson)</p>
+     <p>Last Sent: L: <span id="sentLeft">0</span>% | R: <span id="sentRight">0</span>%</p>
+     <p>Raw Throttle: <span id="rawThrottle">0</span> | Raw Steering: <span id="rawSteering">0</span></p>
+   </div>
+ </div>
+ <script>
+ // Javascript будет изменен для использования WebSocket на следующем шаге.
+ </script>
 </body></html>
 )rawliteral";
 
-
-// Вспомогательные функции для серво (calculatePulseWidth, setPlatformSpeed) остаются ТЕМИ ЖЕ, что и раньше
+// Вспомогательные функции для серво (остаются без изменений)
 long calculatePulseWidth(int speedPercent) {
   speedPercent = constrain(speedPercent, -100, 100);
   long pulseWidth;
@@ -314,41 +120,116 @@ long calculatePulseWidth(int speedPercent) {
 }
 
 void setPlatformSpeed(int leftSpeedPercent, int rightSpeedPercent) {
-  // Эта функция уже откалибрована и просто устанавливает скорости как есть
   long leftPulse = calculatePulseWidth(leftSpeedPercent);
   long rightPulse = calculatePulseWidth(rightSpeedPercent);
   teaserServoLeft.writeMicroseconds(leftPulse);
   teaserServoRight.writeMicroseconds(rightPulse);
-  // Serial вывод можно оставить для отладки или убрать
-  // Serial.print("Set Left: "); Serial.print(leftSpeedPercent); Serial.print("% -> "); Serial.print(leftPulse); Serial.print("us");
-  // Serial.print(" | Set Right: "); Serial.print(rightSpeedPercent); Serial.print("% -> "); Serial.print(rightPulse); Serial.println("us");
 }
 
-// Модифицированный обработчик команд или новый для /drive
-void processDriveCommand(AsyncWebServerRequest *request, int conceptualLeft, int conceptualRight) {
-  // Применяем калибровку направления (инверсия правого мотора)
-  int actualLeftForMotor = conceptualLeft;
-  int actualRightForMotor = -conceptualRight; // Правый мотор инвертирован
+// Функция для отправки текущего статуса платформы клиенту WebSocket
+void sendPlatformStatus(AsyncWebSocketClient *client) {
+  if (!client || client->status() != WS_CONNECTED) {
+    return;
+  }
 
-  // Ограничиваем значения перед отправкой в setPlatformSpeed (на всякий случай)
-  actualLeftForMotor = constrain(actualLeftForMotor, -100, 100);
-  actualRightForMotor = constrain(actualRightForMotor, -100, 100);
-
-  setPlatformSpeed(actualLeftForMotor, actualRightForMotor);
-
-  currentLeftSpeed = actualLeftForMotor;   // Сохраняем фактические значения для отображения
-  currentRightSpeed = actualRightForMotor;
-  lastCommand = "Drive (L:" + String(conceptualLeft) + " R:" + String(conceptualRight) + 
-                " -> M_L:" + String(actualLeftForMotor) + " M_R:" + String(actualRightForMotor) + ")";
+  StaticJsonDocument<256> doc; // Документ для исходящего JSON
+  doc["type"] = "status_update";
   
-  String jsonResponse = "{\"status\":\"success\", \"sent_conceptual_L\":" + String(conceptualLeft) +
-                        ", \"sent_conceptual_R\":" + String(conceptualRight) +
-                        ", \"actual_motor_L\":" + String(actualLeftForMotor) +
-                        ", \"actual_motor_R\":" + String(actualRightForMotor) + "}";
-  AsyncWebServerResponse *response = request->beginResponse(200, "application/json", jsonResponse);
-  response->addHeader("Access-Control-Allow-Origin", "*"); 
-  request->send(response);
-  Serial.println(lastCommand);
+  JsonObject data = doc.createNestedObject("data");
+  data["motorL"] = currentLeftSpeed;
+  data["motorR"] = currentRightSpeed;
+  data["lastCommand"] = lastCommand;
+
+  String output;
+  serializeJson(doc, output);
+  client->text(output);
+}
+
+// Отправка сообщения об ошибке клиенту WebSocket
+void sendWsError(AsyncWebSocketClient *client, const String& message) {
+  if (!client || client->status() != WS_CONNECTED) {
+    return;
+  }
+  StaticJsonDocument<128> doc;
+  doc["type"] = "error";
+  doc["message"] = message;
+  String output;
+  serializeJson(doc, output);
+  client->text(output);
+}
+
+// Обработчик событий WebSocket
+void onWsEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
+  switch (type) {
+    case WS_EVT_CONNECT:
+      Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      sendPlatformStatus(client); // Отправляем начальный статус при подключении
+      break;
+    case WS_EVT_DISCONNECT:
+      Serial.printf("WebSocket client #%u disconnected\n", client->id());
+      break;
+    case WS_EVT_DATA: {
+      AwsFrameInfo *info = (AwsFrameInfo*)arg;
+      if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+        // Данные пришли целиком и это текст
+        char* msg_char = (char*)data;
+        msg_char[len] = '\0'; // Убедимся, что строка нуль-терминирована
+        
+        Serial.printf("WS Data from client #%u: %s\n", client->id(), msg_char);
+
+        StaticJsonDocument<128> doc; // Документ для входящих команд
+        DeserializationError error = deserializeJson(doc, msg_char);
+
+        if (error) {
+          Serial.print(F("deserializeJson() failed: "));
+          Serial.println(error.f_str());
+          sendWsError(client, "Invalid JSON: " + String(error.c_str()));
+          return;
+        }
+
+        String commandType = doc["command"].as<String>(); // Получаем тип команды
+
+        if (commandType.equals("drive")) {
+          if (doc.containsKey("payload") && doc["payload"].is<JsonObject>()) {
+            JsonObject payload = doc["payload"];
+            int conceptualL = payload["left"].as<int>();   // .as<int>() вернет 0 если ключ не найден или тип не тот
+            int conceptualR = payload["right"].as<int>();
+
+            int actualLeftForMotor = conceptualL;
+            int actualRightForMotor = -conceptualR; // Инверсия правого мотора
+
+            actualLeftForMotor = constrain(actualLeftForMotor, -100, 100);
+            actualRightForMotor = constrain(actualRightForMotor, -100, 100);
+
+            setPlatformSpeed(actualLeftForMotor, actualRightForMotor);
+
+            currentLeftSpeed = actualLeftForMotor;
+            currentRightSpeed = actualRightForMotor;
+            lastCommand = "WS Drive (L:" + String(conceptualL) + " R:" + String(conceptualR) +
+                          " -> M_L:" + String(actualLeftForMotor) + " M_R:" + String(actualRightForMotor) + ")";
+            Serial.println(lastCommand);
+            
+            sendPlatformStatus(client); // Отправляем обновленный статус
+
+          } else {
+             sendWsError(client, "Drive command missing or invalid payload");
+          }
+        } else if (commandType.equals("get_status")) {
+          sendPlatformStatus(client);
+        } else {
+          Serial.printf("Unknown WS command: %s\n", commandType.c_str());
+          sendWsError(client, "Unknown command: " + commandType);
+        }
+      }
+      break;
+    }
+    case WS_EVT_PONG:
+      Serial.printf("WS Pong from client #%u\n", client->id());
+      break;
+    case WS_EVT_ERROR:
+      Serial.printf("WebSocket client #%u error #%u: %s\n", client->id(), *((uint16_t*)arg), (char*)data);
+      break;
+  }
 }
 
 
@@ -362,7 +243,7 @@ void setup() {
   teaserServoRight.setPeriodHertz(50);
   teaserServoRight.attach(servoRightPin, ATTACH_PWM_MIN_US, ATTACH_PWM_MAX_US);
 
-  Serial.println("--- Initializing Mobile Platform (Advanced Control) ---");
+  Serial.println("--- Initializing Mobile Platform (WebSocket + ArduinoJson) ---");
   setPlatformSpeed(0, 0);
   delay(500);
   Serial.println("Platform servos initialized.");
@@ -378,36 +259,60 @@ void setup() {
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
 
+  // ВАЖНО: Добавляем заголовок CORS по умолчанию.
+  // Это позволит клиенту (веб-странице), загруженному с другого origin,
+  // успешно установить WebSocket соединение.
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  // Для большей безопасности, если ваш JS клиент будет обслуживаться, например, Python сервером на порту 5000:
+  // DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "http://127.0.0.1:5000");
+
+
+  // Настраиваем WebSocket сервер
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
+
+  // HTTP эндпоинт для отдачи HTML страницы
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", index_html);
   });
 
-  // Новый эндпоинт для приема команд управления
+  // Старые HTTP эндпоинты /drive и /status теперь не нужны для основного управления
+  // Оставляем их закомментированными или удаляем
+  /*
   server.on("/drive", HTTP_GET, [](AsyncWebServerRequest *request){
-    if (request->hasParam("left") && request->hasParam("right")) {
-      int conceptualL = request->getParam("left")->value().toInt();
-      int conceptualR = request->getParam("right")->value().toInt();
-      processDriveCommand(request, conceptualL, conceptualR);
-    } else {
-      request->send(400, "application/json", "{\"status\":\"error\", \"message\":\"Missing left/right parameters\"}");
-    }
+    // ... (старый код с processDriveCommand)
   });
   
-  // Старый эндпоинт /status можно оставить или модифицировать для новой информации
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
-    String jsonResponse = "{\"last_command_full\":\"" + lastCommand + 
-                          "\", \"motor_L\":" + String(currentLeftSpeed) + 
-                          ", \"motor_R\":" + String(currentRightSpeed) + "}";
-    AsyncWebServerResponse *response = request->beginResponse(200, "application/json", jsonResponse);
-    response->addHeader("Access-Control-Allow-Origin", "*"); 
-    request->send(response);
+    // ... (старый код)
   });
+  */
 
   server.begin();
-  Serial.println("HTTP server started");
+  Serial.println("HTTP server with WebSocket (ArduinoJson) started.");
 }
 
+unsigned long lastStatusUpdateTime = 0;
+const long statusUpdateInterval = 200; // Отправлять статус каждые 200 мс
+
 void loop() {
-  // Пусто, так как ESPAsyncWebServer работает асинхронно
-  delay(10);
+  unsigned long currentTime = millis();
+  if (currentTime - lastStatusUpdateTime > statusUpdateInterval) {
+    lastStatusUpdateTime = currentTime;
+    if (ws.count() > 0) { // Если есть подключенные клиенты
+      // Создаем JSON для статуса
+      StaticJsonDocument<256> doc; // Документ для исходящего JSON
+      doc["type"] = "status_update";
+      JsonObject data = doc.createNestedObject("data");
+      data["motorL"] = currentLeftSpeed;
+      data["motorR"] = currentRightSpeed;
+      // data["lastCommand"] = lastCommand; // Раскомментируйте, если нужно, но может быть длинным для частых обновлений
+
+      String output;
+      serializeJson(doc, output);
+      ws.textAll(output); // Отправляем всем подключенным клиентам
+    }
+  }
+  ws.cleanupClients(); // Важно для корректной работы AsyncWebSocket
+  delay(10); 
 }

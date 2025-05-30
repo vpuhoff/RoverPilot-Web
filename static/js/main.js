@@ -118,6 +118,34 @@ function startCameraPtzMovement(x, y, z) {
     }, PTZ_MOVE_TIME_MS);
 }
 
+function updatePlatformConnectionStatusDisplay(status) {
+    // platformConnectionStatusElem is expected to be already selected from the DOM,
+    // e.g., in the DOMContentLoaded listener.
+    // If it's not found here, it means it wasn't selected and assigned globally,
+    // or this function is called too early.
+    const statusElem = document.getElementById('platformConnectionStatus'); // Or use the global platformConnectionStatusElem if it's in scope
+
+    if (!statusElem) {
+        console.error("platformConnectionStatus element not found in updatePlatformConnectionStatusDisplay.");
+        return;
+    }
+
+    if (status.isAttemptingConnection) {
+        statusElem.textContent = "Подключение...";
+        statusElem.className = "status-indicator connecting";
+    } else if (status.isConnected) {
+        statusElem.textContent = `Подключено к ${status.wsUrl}`;
+        statusElem.className = "status-indicator connected";
+    } else {
+        if (!status.wsUrl || status.wsUrl === '') {
+            statusElem.textContent = "Отключено (URL не задан)";
+        } else {
+            statusElem.textContent = "Отключено";
+        }
+        statusElem.className = "status-indicator disconnected";
+    }
+}
+
 function stopCameraPtzMovement() {
     if (ptzMoveTimeoutId) clearTimeout(ptzMoveTimeoutId);
     if (isCurrentlyMovingPtz) {
@@ -170,16 +198,14 @@ function updatePlatformUI(state) {
     // Уведомления и отправленные значения
     if (state.lastError) {
         showPlatformNotification(`Ошибка: ${state.lastError.message}`, 'error');
-        platformSentLeftElem.textContent = "Err";
-        platformSentRightElem.textContent = "Err";
-    } else if (state.lastSentData && state.lastSentData.actual_motor_L !== undefined) {
-        platformSentLeftElem.textContent = state.lastSentData.actual_motor_L;
-        platformSentRightElem.textContent = state.lastSentData.actual_motor_R;
-        // Можно добавить короткое уведомление об успехе, но может быть слишком часто
-        // showPlatformNotification(`Отправлено: L ${state.lastSentData.actual_motor_L}, R ${state.lastSentData.actual_motor_R}`, 'success', 1000);
-    } else { // Если нет ошибки и нет данных (например, при инициализации)
-        platformSentLeftElem.textContent = "N/A";
-        platformSentRightElem.textContent = "N/A";
+        if (platformActualLeftElem) platformActualLeftElem.textContent = "Err"; // Use corrected variable
+        if (platformActualRightElem) platformActualRightElem.textContent = "Err"; // Use corrected variable
+    } else if (state.lastReceivedData && state.lastReceivedData.motorL !== undefined) { // Also, use lastReceivedData and correct field names
+        if (platformActualLeftElem) platformActualLeftElem.textContent = state.lastReceivedData.motorL;
+        if (platformActualRightElem) platformActualRightElem.textContent = state.lastReceivedData.motorR;
+    } else {
+        if (platformActualLeftElem) platformActualLeftElem.textContent = "N/A";
+        if (platformActualRightElem) platformActualRightElem.textContent = "N/A";
     }
 }
 
@@ -198,6 +224,30 @@ function showPlatformNotification(message, type, duration = 3000) {
 // --- Инициализация и общие обработчики событий ---
 document.addEventListener('DOMContentLoaded', () => {
     // Общие элементы
+    console.log("DOMContentLoaded -> Начало поиска platformConnectionStatus");
+    const testElem = document.getElementById('platformConnectionStatus');
+
+    if (testElem === null) {
+        console.error('ОШИБКА: document.getElementById("platformConnectionStatus") ВЕРНУЛ NULL!');
+    } else {
+        console.log('УСПЕХ: document.getElementById("platformConnectionStatus") нашел элемент:', testElem);
+    }
+
+    platformConnectionStatusElem = testElem;
+    console.log('Значение глобальной platformConnectionStatusElem сразу после присвоения (проверка типа):', typeof platformConnectionStatusElem, platformConnectionStatusElem instanceof Element);
+    // Проверка перед вызовом функции, которая может вызвать ошибку
+    if (platformConnectionStatusElem) {
+        console.log("Попытка установить textContent для platformConnectionStatusElem (если не null):", platformConnectionStatusElem);
+        try {
+            platformConnectionStatusElem.textContent = "Тестовый статус из DOMContentLoaded";
+            console.log("Установка textContent прошла УСПЕШНО.");
+        } catch (e) {
+            console.error("ОШИКА при установке textContent:", e, "Элемент:", platformConnectionStatusElem);
+        }
+    } else {
+        console.error("platformConnectionStatusElem ВСЕ ЕЩЕ NULL перед попыткой установить textContent в DOMContentLoaded!");
+    }
+
     logOutputElement = document.getElementById('logOutput');
     loaderElement = document.getElementById('loader');
 
@@ -282,8 +332,8 @@ document.addEventListener('DOMContentLoaded', () => {
     platformSteeringBar = document.getElementById('platformSteeringBar');
     platformSteeringValue = document.getElementById('platformSteeringValue');
     platformSteeringBarText = document.getElementById('platformSteeringBarText');
-    platformSentLeftElem = document.getElementById('platformSentLeft');
-    platformSentRightElem = document.getElementById('platformSentRight');
+    platformActualLeftElem = document.getElementById('platformActualLeft'); 
+    platformActualRightElem = document.getElementById('platformActualRight'); 
     platformKeysPressedElem = document.getElementById('platformKeysPressed');
     platformNotificationElem = document.getElementById('platformNotification');
     platformHandbrakeButton = document.getElementById('platformHandbrake');
@@ -293,12 +343,14 @@ document.addEventListener('DOMContentLoaded', () => {
         alert("Ошибка: Не все элементы для управления платформой найдены.");
         return;
     }
-
+    const initialPlatformIp = platformIpInputElem.value || "192.168.0.155"; // Default from input
     const platformConfig = {
-        baseUrl: platformIpInputElem.value || "http://192.168.0.155", // Default or from input
+        wsUrl: `ws://${initialPlatformIp}/ws`, // Provide wsUrl, not baseUrl
         onUpdate: updatePlatformUI,
-        // controlParams: { MAX_THROTTLE: 80 } // Example
+        onConnectionStatusChange: updatePlatformConnectionStatusDisplay, // Recommended: add this callback
+        // controlParams: { MAX_THROTTLE: 80 }
     };
+    
     try {
         platformControllerInstance = new PlatformController(platformConfig);
         platformControllerInstance.start();
@@ -312,10 +364,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     platformIpInputElem.addEventListener('change', () => {
         if (platformControllerInstance) {
-            platformControllerInstance.setBaseUrl(platformIpInputElem.value);
-            logger(`Платформа: IP изменен на: ${platformIpInputElem.value}`);
+            const newIp = platformIpInputElem.value;
+            if (newIp) {
+                platformControllerInstance.setWsUrl(`ws://${newIp}/ws`); // Correct method and formatting
+            } else {
+                platformControllerInstance.setWsUrl('');
+            }
         }
     });
+    
 
     platformHandbrakeButton.addEventListener('click', () => {
         if (platformControllerInstance) platformControllerInstance.toggleHandbrake();

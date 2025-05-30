@@ -8,15 +8,16 @@ class PlatformController {
             BRAKE_POWER: 6,
             STEERING_SPEED: 9,
             STEERING_RETURN_SPEED: 7,
-            UPDATE_INTERVAL_MS: 50,
-            ...config.controlParams // Allow overriding control parameters
+            UPDATE_INTERVAL_MS: 50, // Интервал отправки команд на ESP32
+            RECONNECT_INTERVAL_MS: 3000, // Интервал попыток переподключения
+            ...(config.controlParams || {}) // Добавил проверку на undefined
         };
 
-        this.apiClientConfig = {
-            baseUrl: config.baseUrl || '',
+        this.wsConfig = {
+            wsUrl: config.wsUrl || '', // Например, ws://192.168.0.155/ws
         };
 
-        // Internal State
+        // Внутреннее состояние контроллера
         this.throttle = 0;
         this.steering = 0;
         this.handbrakeOn = false;
@@ -24,61 +25,166 @@ class PlatformController {
         this.conceptualLeft = 0;
         this.conceptualRight = 0;
 
-        // Communication State
-        this.lastSentData = null;
-        this.lastError = null;
+        // Состояние WebSocket
+        this.websocket = null;
+        this.isConnected = false;
+        this.isAttemptingConnection = false;
+        this.reconnectTimeoutId = null;
+
+        // Состояние коммуникации
+        this.lastSentCommand = null;    // Последняя отправленная команда (объект)
+        this.lastReceivedData = null; // Данные из последнего 'status_update' от ESP32
+        this.lastError = null;          // Ошибки WebSocket или от ESP32
 
         // Callbacks
-        this._onUpdateCallback = config.onUpdate || function() {}; // Called with comprehensive state
-        
-        this._updateIntervalId = null;
+        this._onUpdateCallback = config.onUpdate || function() {}; // Вызывается с полным состоянием
+        this._onConnectionStatusChangeCallback = config.onConnectionStatusChange || function() {}; // Вызывается при изменении статуса соединения
+
+        this._updateIntervalId = null; // ID интервала для _controlLoop
     }
 
-    // --- Private API Client Methods (simplified from previous client) ---
-    async _request(endpoint, options = {}) {
-        const url = this.apiClientConfig.baseUrl + endpoint;
-        try {
-            const response = await fetch(url, options);
-            let responseData;
-            try {
-                responseData = await response.json();
-            } catch (e) {
-                if (!response.ok) {
-                    throw { message: `HTTP error ${response.status}: ${response.statusText || 'Non-JSON error body.'}`, status: response.status, details: null };
-                }
-                throw { message: 'Non-JSON response when JSON expected.', status: response.status, details: null };
-            }
+    // --- Управление WebSocket Соединением ---
+    connect() {
+        if (this.isConnected || this.isAttemptingConnection) {
+            console.log("PlatformController: Попытка подключения уже выполняется или соединение установлено.");
+            return;
+        }
+        if (!this.wsConfig.wsUrl) {
+            this.lastError = { message: "WebSocket URL не установлен." };
+            this._notifyUpdate();
+            this._notifyConnectionStatusChange();
+            console.error("PlatformController: WebSocket URL не установлен.");
+            return;
+        }
 
-            if (!response.ok) {
-                throw { message: `Server error: ${responseData.message || 'Unknown server error'}`, status: response.status, details: responseData };
-            }
-            if (responseData.status && responseData.status === 'error') { // ESP32 /drive specific error with HTTP 200
-                 throw { message: `Application error: ${responseData.message || 'Unknown app error'}`, status: 200, details: responseData, isAppError: true };
-            }
-            return responseData;
+        this.isAttemptingConnection = true;
+        this.lastError = null; // Очищаем предыдущие ошибки при новой попытке
+        this._notifyConnectionStatusChange();
+        console.log(`PlatformController: Попытка подключения к ${this.wsConfig.wsUrl}...`);
+
+        try {
+            this.websocket = new WebSocket(this.wsConfig.wsUrl);
         } catch (error) {
-            if (error.status !== undefined) throw error; // Re-throw our structured errors
-            throw { message: `Network request failed: ${error.message}`, details: error, isNetworkError: true };
+            console.error("PlatformController: Ошибка конструктора WebSocket:", error);
+            this.lastError = { message: `Ошибка подключения WebSocket: ${error.message}`, details: error, isNetworkError: true };
+            this.isAttemptingConnection = false;
+            this.isConnected = false;
+            this._notifyUpdate();
+            this._notifyConnectionStatusChange();
+            this._scheduleReconnect();
+            return;
+        }
+
+        this.websocket.onopen = () => {
+            console.log("PlatformController: WebSocket подключен.");
+            this.isConnected = true;
+            this.isAttemptingConnection = false;
+            this.lastError = null;
+            if (this.reconnectTimeoutId) {
+                clearTimeout(this.reconnectTimeoutId);
+                this.reconnectTimeoutId = null;
+            }
+            this._notifyConnectionStatusChange();
+            this.getESPStatus(); // Запрашиваем начальный статус после подключения
+        };
+
+        this.websocket.onmessage = (event) => {
+            // console.log("PlatformController: Получено сообщение WS:", event.data);
+            try {
+                const message = JSON.parse(event.data);
+                if (message.type === 'status_update' && message.data) {
+                    this.lastReceivedData = message.data; // Например, { motorL: X, motorR: Y, lastCommand: "..." }
+                } else if (message.type === 'error' && message.message) {
+                    console.error("PlatformController: Сообщение об ошибке от ESP32:", message.message);
+                    this.lastError = { message: `Ошибка ESP32: ${message.message}`, details: message, isAppError: true };
+                } else {
+                    console.warn("PlatformController: Неизвестный тип или формат сообщения от ESP32:", message);
+                }
+            } catch (e) {
+                console.error("PlatformController: Ошибка парсинга сообщения WebSocket:", e);
+                this.lastError = { message: `Ошибка парсинга WS сообщения: ${e.message}`, details: e };
+            }
+            this._notifyUpdate(); // Уведомляем UI о новых данных или ошибке
+        };
+
+        this.websocket.onerror = (errorEvent) => {
+            console.error("PlatformController: Ошибка WebSocket:", errorEvent);
+            this.lastError = { message: "Произошла ошибка WebSocket.", details: 'Generic WebSocket Error', isNetworkError: true };
+            this.isAttemptingConnection = false; 
+            this._notifyUpdate();
+            this._notifyConnectionStatusChange();
+        };
+
+        this.websocket.onclose = (event) => {
+            console.log(`PlatformController: WebSocket отключен. Код: ${event.code}, Причина: ${event.reason}, Чисто: ${event.wasClean}`);
+            this.isConnected = false;
+            this.isAttemptingConnection = false;
+            if (!this.lastError || !this.lastError.isNetworkError && event.code !== 1000 /* Normal Closure */) {
+                 this.lastError = { message: `WebSocket отключен (Код: ${event.code})`, details: event, isNetworkError: true };
+            }
+            this._notifyUpdate();
+            this._notifyConnectionStatusChange();
+            if (event.code !== 1000) { 
+                this._scheduleReconnect();
+            }
+        };
+    }
+
+    _scheduleReconnect() {
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+        }
+        if (!this.wsConfig.wsUrl) {
+            console.log("PlatformController: Переподключение не запланировано, так как WebSocket URL не установлен.");
+            return;
+        }
+        console.log(`PlatformController: Планирование переподключения через ${this.config.RECONNECT_INTERVAL_MS}мс...`);
+        this.reconnectTimeoutId = setTimeout(() => {
+            this.connect();
+        }, this.config.RECONNECT_INTERVAL_MS);
+    }
+
+    disconnect() {
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+            this.reconnectTimeoutId = null;
+            console.log("PlatformController: Отменено запланированное переподключение.");
+        }
+        if (this.websocket) {
+            console.log("PlatformController: Ручное отключение WebSocket.");
+            this.websocket.onclose = null; 
+            this.websocket.close(1000); 
+            this.websocket = null;
+        }
+        this.isConnected = false;
+        this.isAttemptingConnection = false;
+        this._notifyConnectionStatusChange();
+    }
+
+    _sendWebSocketCommand(commandData) {
+        if (!this.isConnected || !this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+            return false;
+        }
+        try {
+            const commandString = JSON.stringify(commandData);
+            this.websocket.send(commandString);
+            this.lastSentCommand = commandData; 
+            return true;
+        } catch (error) {
+            console.error("PlatformController: Ошибка отправки команды WebSocket:", error);
+            this.lastError = { message: `Ошибка отправки WS команды: ${error.message}`, details: error };
+            this._notifyUpdate(); 
+            return false;
         }
     }
 
-    async _sendDriveCommandInternal(left, right) {
-        const l = Math.round(left);
-        const r = Math.round(right);
-        const endpoint = `/drive?left=${l}&right=${r}`;
-        return this._request(endpoint, { method: 'GET' });
-    }
-
-    // --- Control Logic Methods ---
     _updateSteering() {
         const keyA = 'a';
         const keyD = 'd';
-        const keyArrowLeft = 'arrowleft';
-        const keyArrowRight = 'arrowright';
 
-        if (this.keysPressed[keyA] || this.keysPressed[keyArrowLeft]) {
+        if (this.keysPressed[keyA]) {
             this.steering -= this.config.STEERING_SPEED;
-        } else if (this.keysPressed[keyD] || this.keysPressed[keyArrowRight]) {
+        } else if (this.keysPressed[keyD]) {
             this.steering += this.config.STEERING_SPEED;
         } else {
             if (this.steering > this.config.STEERING_RETURN_SPEED) {
@@ -97,15 +203,12 @@ class PlatformController {
             this.throttle = 0;
             return;
         }
-
         const keyW = 'w';
         const keyS = 's';
-        const keyArrowUp = 'arrowup';
-        const keyArrowDown = 'arrowdown';
 
-        if (this.keysPressed[keyW] || this.keysPressed[keyArrowUp]) {
+        if (this.keysPressed[keyW]) {
             this.throttle += this.config.THROTTLE_ACCELERATION;
-        } else if (this.keysPressed[keyS] || this.keysPressed[keyArrowDown]) {
+        } else if (this.keysPressed[keyS]) {
             this.throttle -= this.config.BRAKE_POWER;
         } else {
             if (this.throttle > this.config.THROTTLE_DECELERATION_NATURAL) {
@@ -126,124 +229,175 @@ class PlatformController {
         this.conceptualLeft = baseSpeed + steeringAdjustment;
         this.conceptualRight = baseSpeed - steeringAdjustment;
 
-        this.conceptualLeft = Math.max(-this.config.MAX_THROTTLE, Math.min(this.config.MAX_THROTTLE, this.conceptualLeft));
-        this.conceptualRight = Math.max(-this.config.MAX_THROTTLE, Math.min(this.config.MAX_THROTTLE, this.conceptualRight));
+        const maxMagnitude = Math.max(Math.abs(this.conceptualLeft), Math.abs(this.conceptualRight));
+        if (maxMagnitude > this.config.MAX_THROTTLE) {
+            const scale = this.config.MAX_THROTTLE / maxMagnitude;
+            this.conceptualLeft *= scale;
+            this.conceptualRight *= scale;
+        }
+
+        this.conceptualLeft = Math.round(this.conceptualLeft);
+        this.conceptualRight = Math.round(this.conceptualRight);
     }
 
-    async _controlLoop() {
+    _controlLoop() {
         this._updateSteering();
         this._updateThrottle();
         this._mixToMotorSpeeds();
 
-        try {
-            this.lastSentData = await this._sendDriveCommandInternal(this.conceptualLeft, this.conceptualRight);
-            this.lastError = null;
-        } catch (error) {
-            this.lastError = error;
-            // Decide if lastSentData should be nulled or kept from previous success
-            // For now, null it on error to indicate current send failed
-            this.lastSentData = null;
+        const command = {
+            command: "drive",
+            payload: {
+                left: this.conceptualLeft,
+                right: this.conceptualRight
+            }
+        };
+        
+        if (this.isConnected) { 
+            this._sendWebSocketCommand(command);
         }
         
-        this._notifyUpdate();
+        this._notifyUpdate(); 
     }
     
     _notifyUpdate() {
          if (this._onUpdateCallback) {
-            this._onUpdateCallback({
-                throttle: this.throttle,
-                steering: this.steering,
-                conceptualLeft: this.conceptualLeft,
-                conceptualRight: this.conceptualRight,
-                handbrakeOn: this.handbrakeOn,
-                keysPressed: { ...this.keysPressed }, // Send a shallow copy
-                lastSentData: this.lastSentData,
-                lastError: this.lastError,
-            });
+            this._onUpdateCallback(this.getCurrentState());
         }
     }
 
-    // --- Public Methods ---
-    setBaseUrl(baseUrl) {
-        this.apiClientConfig.baseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    _notifyConnectionStatusChange() {
+        if (this._onConnectionStatusChangeCallback) {
+            this._onConnectionStatusChangeCallback({
+                isConnected: this.isConnected,
+                isAttemptingConnection: this.isAttemptingConnection,
+                wsUrl: this.wsConfig.wsUrl
+            });
+        }
+        this._notifyUpdate();
+    }
+
+    setWsUrl(wsUrl) {
+        if (wsUrl && !wsUrl.startsWith("ws://") && !wsUrl.startsWith("wss://")) { // Добавил проверку на пустой wsUrl
+            console.error("PlatformController: Неверный WebSocket URL. Должен начинаться с ws:// или wss://. URL не установлен.");
+            this.lastError = { message: "Неверный WebSocket URL. Должен начинаться с ws:// или wss://." };
+            this.wsConfig.wsUrl = ''; 
+            this._notifyConnectionStatusChange();
+            return;
+        }
+        this.wsConfig.wsUrl = wsUrl;
+        console.log(`PlatformController: WebSocket URL установлен: ${wsUrl}`);
+        this.lastError = null; 
+
+        if (this.isConnected || this.isAttemptingConnection || this.websocket) {
+            console.log("PlatformController: WebSocket URL изменен, попытка переподключения к новому URL.");
+            this.disconnect(); 
+            if (this.wsConfig.wsUrl) { // Подключаемся только если новый URL не пустой
+                 this.connect();    
+            } else {
+                this._notifyConnectionStatusChange(); // Обновить UI если URL был очищен
+            }
+        } else if (this.wsConfig.wsUrl) { // Если не были подключены, но URL задан
+            this.connect();
+        }
+         else {
+             this._notifyConnectionStatusChange(); 
+        }
     }
 
     pressKey(key) {
         const lowerKey = key.toLowerCase();
         this.keysPressed[lowerKey] = true;
-        if(lowerKey === 'q') { // Q is special, it toggles handbrake directly
-            this.toggleHandbrake(); // Toggling handbrake might trigger an immediate UI update.
-        }
-        // For other keys, the effect will be seen in the next _controlLoop tick
-        // However, we can optionally call _notifyUpdate for immediate key display feedback
-        // This might be too frequent if control loop is fast.
-        // For now, key display updates via the main loop's _notifyUpdate.
+        this._notifyUpdate(); 
     }
 
     releaseKey(key) {
         delete this.keysPressed[key.toLowerCase()];
+        this._notifyUpdate(); 
     }
 
     toggleHandbrake() {
         this.handbrakeOn = !this.handbrakeOn;
         if (this.handbrakeOn) {
-            this.throttle = 0; // Immediate effect on throttle
+            this.throttle = 0; 
+            this.conceptualLeft = 0;
+            this.conceptualRight = 0;
+            if(this.isConnected) {
+                this._sendWebSocketCommand({ command: "drive", payload: { left: 0, right: 0 } });
+            }
         }
-        // Notify UI of handbrake and potentially throttle change immediately
-        this._notifyUpdate();
+        this._notifyUpdate(); 
     }
 
     start() {
-        if (this._updateIntervalId) {
+        if (this._updateIntervalId) { 
             this.stop();
         }
+        console.log("PlatformController: Запуск...");
+        if (this.wsConfig.wsUrl) { // Пытаемся подключиться только если URL задан
+            this.connect(); 
+        } else {
+            console.warn("PlatformController: Не могу запустить, WebSocket URL не установлен.");
+            this._notifyConnectionStatusChange(); // Обновить UI, что мы не подключены
+        }
+        
         this._updateIntervalId = setInterval(() => this._controlLoop(), this.config.UPDATE_INTERVAL_MS);
-        console.log("PlatformController started.");
+        console.log("PlatformController: Цикл управления запущен.");
     }
 
     stop() {
+        console.log("PlatformController: Остановка...");
         if (this._updateIntervalId) {
             clearInterval(this._updateIntervalId);
             this._updateIntervalId = null;
-            console.log("PlatformController stopped.");
+            console.log("PlatformController: Цикл управления остановлен.");
         }
+        
+        if(this.isConnected && this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+            this._sendWebSocketCommand({ command: "drive", payload: { left: 0, right: 0 } });
+            console.log("PlatformController: Отправлена финальная команда остановки.");
+        }
+
+        this.disconnect(); 
+
+        this.throttle = 0;
+        this.steering = 0;
+        this.conceptualLeft = 0;
+        this.conceptualRight = 0;
+        this.keysPressed = {};
+
+        this._notifyUpdate(); 
+        // _notifyConnectionStatusChange() вызовется из disconnect()
     }
 
-    // For direct/manual control, bypassing the loop. Use with caution if loop is running.
-    async manualDrive(left, right) {
-        try {
-            this.lastSentData = await this._sendDriveCommandInternal(left, right);
-            this.lastError = null;
-            this._notifyUpdate(); // Notify with the manually sent data
-            return this.lastSentData;
-        } catch (error) {
-            this.lastError = error;
-            this.lastSentData = null;
-            this._notifyUpdate();
-            throw error;
-        }
+    manualDrive(left, right) {
+        this.conceptualLeft = Math.round(left);
+        this.conceptualRight = Math.round(right);
+        const success = this._sendWebSocketCommand({ command: "drive", payload: { left: this.conceptualLeft, right: this.conceptualRight } });
+        this._notifyUpdate(); 
+        return success; 
     }
     
-    // To get current status from ESP32 /status endpoint
-    async getESPStatus() {
-        try {
-            return await this._request(`/status`, { method: 'GET' });
-        } catch (error) {
-            console.error("Failed to get ESP status:", error);
-            throw error;
-        }
+    getESPStatus() {
+        if (!this.isConnected) return false;
+        const success = this._sendWebSocketCommand({ command: "get_status" });
+        return success;
     }
     
-    getCurrentState() { // Exposes the current client-side state
+    getCurrentState() { 
         return {
             throttle: this.throttle,
             steering: this.steering,
             conceptualLeft: this.conceptualLeft,
             conceptualRight: this.conceptualRight,
             handbrakeOn: this.handbrakeOn,
-            keysPressed: { ...this.keysPressed },
-            lastSentData: this.lastSentData,
-            lastError: this.lastError,
+            keysPressed: { ...this.keysPressed }, 
+            isConnected: this.isConnected,
+            isAttemptingConnection: this.isAttemptingConnection,
+            wsUrl: this.wsConfig.wsUrl,
+            lastSentCommand: this.lastSentCommand,   
+            lastReceivedData: this.lastReceivedData, 
+            lastError: this.lastError,               
             isLoopRunning: !!this._updateIntervalId
         };
     }
