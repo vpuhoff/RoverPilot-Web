@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from enum import Enum
 
 # --- Начало Конфигурации ---
-RTSP_URL = "rtsp://admin:123456@192.168.0.167:554"  # Замените на ваш URL
-ONVIF_HOST = "192.168.0.167"  # IP-адрес камеры для ONVIF управления
+RTSP_URL = "rtsp://admin:123456@192.168.0.168:554"  # Замените на ваш URL
+ONVIF_HOST = "192.168.0.168"  # IP-адрес камеры для ONVIF управления
 ONVIF_USER = "admin"  # Имя пользователя для ONVIF
 ONVIF_PASSWORD = "123456"  # Пароль для ONVIF (ВАЖНО: замените на ваш!)
 # Возможные значения: "YOOSEE", "YCC365", "Y05"

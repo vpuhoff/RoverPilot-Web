@@ -11,7 +11,7 @@ const PTZ_MOVE_TIME_MS = 0.4 * 1000; // Duration for continuous move before auto
 const CAMERA_PAN_SPEED_CONFIG = 0.5;
 const CAMERA_TILT_SPEED_CONFIG = 0.5;
 const CAMERA_ZOOM_SPEED_CONFIG = 0.5;
-const BACKEND_BASE_URL = 'http://localhost:5000'; // URL вашего Flask бэкенда
+const BACKEND_BASE_URL = 'http://localhost:35000'; // URL вашего Flask бэкенда
 let ptzMoveTimeoutId = null;
 let isCurrentlyMovingPtz = false;
 
@@ -509,7 +509,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!platformIpInputElem || !platformThrottleBar || !platformSteeringBar || !platformHandbrakeButton || !platformActualLeftElem || !platformActualRightElem || !platformKeysPressedElem || !platformNotificationElem) {
          logger("КРИТИЧЕСКАЯ ОШИБКА: Не все HTML-элементы для управления платформой найдены!", "error");
     } else {
-        const initialPlatformIp = platformIpInputElem.value || "192.168.0.155";
+        const initialPlatformIp = platformIpInputElem.value || "127.0.0.1";
         const platformConfig = {
             wsUrl: initialPlatformIp ? `ws://${initialPlatformIp}/ws` : '',
             onUpdate: updatePlatformUI,

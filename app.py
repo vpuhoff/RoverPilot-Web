@@ -1,7 +1,7 @@
 import base64
 from datetime import datetime, timezone
 import hashlib
-from random import random
+import random
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS # type: ignore
 import asyncio
@@ -44,13 +44,14 @@ YCC365_DEFAULT_HEADERS = {'Content-Type': 'application/soap+xml;charset=UTF8'}
 
 pcs = set() # Хранилище для RTCPeerConnection объектов
 # RTSP URL можно будет передавать через запрос или конфигурацию
-DEFAULT_RTSP_URL = "rtsp://admin:123456@192.168.0.167:554" # Замените на ваш URL
+DEFAULT_RTSP_URL = "rtsp://admin:123456@192.168.0.168:554" # Замените на ваш URL
 media_relay = MediaRelay()
 rtsp_video_track_source = None # Источник трека от MediaPlayer для ретрансляции
 
 # Глобальный asyncio loop для фоновых задач WebRTC и RTSP
 background_loop = None
 rtsp_thread = None
+SELECTED_CAMERA_TYPE_NAME_GLOBAL = "YCC365"  # Значение по умолчанию
 
 def get_camera_onvif_params(camera_type_enum_str):
     try:
@@ -372,7 +373,7 @@ if __name__ == '__main__':
     
     try:
         logger.info("Запуск Flask сервера...")
-        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+        app.run(host='0.0.0.0', port=35000, debug=True, use_reloader=False)
     except KeyboardInterrupt:
         logger.info("Получен сигнал KeyboardInterrupt. Остановка сервера...")
     finally:
